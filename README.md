@@ -131,3 +131,45 @@ app.json            # Even Hub manifest
 - **Quran layout data**: [zonetecde/mushaf-layout](https://github.com/zonetecde/mushaf-layout) (MIT)
 - **Arabic font**: UthmanicHafs — the standard Quranic typeface
 - **SDK**: [Even Realities Even Hub SDK](https://hub.evenrealities.com/docs)
+
+---
+
+## Contributing
+
+Contributions are welcome and appreciated. This project is part of a broader effort to make Quranic tools accessible on wearable devices — any improvement, however small, is meaningful.
+
+### How to contribute
+
+1. **Fork** the repository on GitHub
+2. **Create a branch** for your feature or fix: `git checkout -b feature/your-feature-name`
+3. **Make your changes** and commit with a clear message
+4. **Push** to your fork and open a **Pull Request**
+
+### Ideas for contributions
+
+- Bug fixes and stability improvements
+- Better Arabic text rendering or font size tuning
+- Support for additional Quran recitation styles or riwayat
+- Word-by-word highlighting as you read
+- Bookmarking and reading position memory
+- Tafsir or translation overlay
+- Documentation and translations
+
+### Guidelines
+
+- Keep changes focused — one feature or fix per pull request
+- Test on a physical G2 device if possible, or describe your testing approach
+- Respect the existing code style (TypeScript, no external runtime dependencies)
+- All contributions must be compatible with the **GNU General Public License v3**
+
+### Reporting issues
+
+Please open a [GitHub Issue](../../issues) with a clear description of the problem, steps to reproduce, and your G2 firmware version and Even Hub app version.
+
+---
+
+## License
+
+This project is licensed under the **GNU General Public License v3.0** — see the [LICENSE](LICENSE) file for details.
+
+Any derivative work must also be distributed under GPL v3 and must make its source code available.
