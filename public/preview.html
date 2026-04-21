@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+@font-face { font-family: 'UthmanicHafs'; src: url('/fonts/UthmanicHafs.woff2') format('woff2'); }
+body { background: #111; padding: 16px; font-family: monospace; color: #aaa; }
+canvas { display: block; margin-bottom: 8px; }
+label { color: #888; font-size: 12px; }
+</style>
+</head>
+<body>
+<label>Page: <input id="pageNum" type="number" value="4" min="1" max="604" style="width:60px">
+Screen: <input id="screenNum" type="number" value="0" min="0" max="2" style="width:40px">
+<button onclick="render()">Render</button></label>
+<br><br>
+<canvas id="c"></canvas>
+
+<script>
+const DISPLAY_W    = 576
+const TILE_H       = 130
+const TEXT_AREA_H  = 104
+const FOOTER_H     = 26
+const LINES_PER    = 5
+const MARGIN       = 8
+const FONT         = "'UthmanicHafs', serif"
+const TEXT_FS      = 18
+const HEADER_FS    = 15
+
+function stripWaqf(t) {
+  return t.replace(/[\u06DF-\u06E8\u06EA-\u06ED\u0600-\u0605]/g, '')
+}
+
+function toArabic(n) {
+  return String(n).replace(/\d/g, d => String.fromCharCode(0x0660 + parseInt(d)))
+}
+
+async function render() {
+  const pageNum   = parseInt(document.getElementById('pageNum').value)
+  const screenIdx = parseInt(document.getElementById('screenNum').value)
+
+  const resp = await fetch(`/mushaf/page-${String(pageNum).padStart(3,'0')}.json`)
+  const data = await resp.json()
+  const allLines = data.lines
+
+  const start = screenIdx * LINES_PER
+  const slice = allLines.slice(start, start + LINES_PER)
+  while (slice.length < LINES_PER) slice.push({ type: 'text', text: '' })
+
+  const totalScreens = Math.ceil(allLines.length / LINES_PER)
+
+  // Determine surah name
+  let surahName = ''
+  for (let i = 0; i < slice.length; i++) {
+    if (slice[i].type === 'surah-header') {
+      const hasVerse = slice.slice(i+1).some(l => l.type === 'text' && (l.text || (l.words && l.words.length)))
+      if (hasVerse) surahName = slice[i].text || ''
+    }
+  }
+  if (!surahName) {
+    const preceding = allLines.slice(0, start).reverse()
+    const h = preceding.find(l => l.type === 'surah-header')
+    surahName = h?.text || ''
+  }
+
+  const c = document.getElementById('c')
+  c.width  = DISPLAY_W
+  c.height = TILE_H
+  const ctx = c.getContext('2d')
+
+  ctx.fillStyle = '#000'
+  ctx.fillRect(0, 0, DISPLAY_W, TILE_H)
+
+  const lineH = Math.floor(TEXT_AREA_H / LINES_PER)
+  ctx.fillStyle = '#fff'
+  ctx.direction = 'rtl'
+  ctx.textBaseline = 'middle'
+
+  slice.forEach((line, i) => {
+    const y = i * lineH + lineH / 2
+    const text = stripWaqf(
+      line.words && line.words.length > 0
+        ? line.words.map(w => w.word).join(' ')
+        : (line.text || '')
+    )
+
+    if (line.type === 'surah-header') {
+      ctx.strokeStyle = '#888'; ctx.lineWidth = 1
+      ctx.beginPath(); ctx.moveTo(MARGIN, i*lineH+2); ctx.lineTo(DISPLAY_W-MARGIN, i*lineH+2); ctx.stroke()
+      ctx.beginPath(); ctx.moveTo(MARGIN, (i+1)*lineH-2); ctx.lineTo(DISPLAY_W-MARGIN, (i+1)*lineH-2); ctx.stroke()
+      ctx.font = `${HEADER_FS}px ${FONT}`
+      ctx.textAlign = 'center'
+      ctx.fillText(text, DISPLAY_W/2, y)
+    } else if (line.type === 'basmala') {
+      ctx.font = `${HEADER_FS}px ${FONT}`
+      ctx.textAlign = 'center'
+      ctx.fillText('بِسْمِ ٱللَّهِ ٱلرَّحْمَـٰنِ ٱلرَّحِيمِ', DISPLAY_W/2, y)
+    } else {
+      let fs = TEXT_FS
+      ctx.font = `${fs}px ${FONT}`
+      const textWidth = DISPLAY_W - MARGIN * 2
+      while (ctx.measureText(text).width > textWidth && fs > 11) {
+        fs--
+        ctx.font = `${fs}px ${FONT}`
+      }
+      ctx.textAlign = 'center'
+      ctx.fillText(text, DISPLAY_W/2, y)
+    }
+  })
+
+  // Footer separator
+  ctx.strokeStyle = '#444'; ctx.lineWidth = 1
+  ctx.beginPath(); ctx.moveTo(0, TEXT_AREA_H); ctx.lineTo(DISPLAY_W, TEXT_AREA_H); ctx.stroke()
+
+  const fy = TEXT_AREA_H + FOOTER_H / 2
+  ctx.textBaseline = 'middle'
+  ctx.fillStyle = '#aaa'; ctx.font = '11px monospace'; ctx.direction = 'ltr'
+  ctx.textAlign = 'left';   ctx.fillText(`ص${toArabic(pageNum)}`, MARGIN, fy)
+  ctx.textAlign = 'center'; ctx.fillText(`${toArabic(screenIdx+1)}/${toArabic(totalScreens)}`, DISPLAY_W/2, fy)
+  if (surahName) {
+    ctx.font = `11px ${FONT}`
+    ctx.textAlign = 'right'; ctx.direction = 'rtl'
+    ctx.fillText(surahName, DISPLAY_W - MARGIN, fy)
+  }
+}
+
+// Render on load
+window.addEventListener('load', render)
+</script>
+</body>
+</html>

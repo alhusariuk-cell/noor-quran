@@ -1,0 +1,870 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Noor – Quran Reader for G2</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Amiri:wght@400;700&display=swap" rel="stylesheet" />
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:       #0d0d0d;
+      --surface:  #1a1a1a;
+      --border:   #2e2e2e;
+      --accent:   #00e676;
+      --accent2:  #00bfa5;
+      --text:     #e8e8e8;
+      --muted:    #888;
+      --danger:   #ef5350;
+      --radius:   12px;
+    }
+
+    html, body {
+      height: 100%;
+      background: var(--bg);
+      color: var(--text);
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      font-size: 15px;
+    }
+
+    /* ── Layout ─────────────────────────────────────────── */
+    .app {
+      max-width: 480px;
+      margin: 0 auto;
+      padding: 0 0 80px;
+      display: flex;
+      flex-direction: column;
+      min-height: 100%;
+    }
+
+    /* ── Header ─────────────────────────────────────────── */
+    .header {
+      position: sticky;
+      top: 0;
+      z-index: 10;
+      background: var(--bg);
+      border-bottom: 1px solid var(--border);
+      padding: 14px 16px 10px;
+    }
+    .header-top {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 10px;
+      direction: ltr;
+    }
+    .logo {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .logo-icon {
+      width: 36px; height: 36px;
+      border-radius: 8px;
+      overflow: hidden;
+      flex-shrink: 0;
+    }
+    .logo-icon img {
+      width: 100%; height: 100%;
+      object-fit: cover;
+    }
+    .logo-text h1 {
+      font-size: 1.1rem;
+      font-weight: 700;
+      color: var(--text);
+      direction: ltr;
+    }
+    .logo-text h1 span { color: var(--accent); }
+    .logo-text p {
+      font-size: 0.72rem;
+      color: var(--muted);
+      direction: ltr;
+    }
+    .status-badge {
+      font-size: 0.72rem;
+      padding: 3px 10px;
+      border-radius: 20px;
+      background: #1e3a2a;
+      color: var(--accent);
+      border: 1px solid #2a5a3a;
+      direction: ltr;
+    }
+    .status-badge.connecting { background: #2a2a1e; color: #ffd740; border-color: #5a4a1e; }
+    .status-badge.error      { background: #3a1e1e; color: var(--danger); border-color: #5a2a2a; }
+
+    /* ── Search ─────────────────────────────────────────── */
+    .search-wrap {
+      position: relative;
+    }
+    .search-wrap input {
+      width: 100%;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 9px 36px 9px 12px;
+      color: var(--text);
+      font-size: 0.9rem;
+      outline: none;
+      direction: ltr;
+    }
+    .search-wrap input:focus { border-color: var(--accent); }
+    .search-wrap input::placeholder { color: var(--muted); }
+    .search-icon {
+      position: absolute;
+      right: 10px; top: 50%;
+      transform: translateY(-50%);
+      color: var(--muted);
+      font-size: 14px;
+      pointer-events: none;
+    }
+
+    /* ── Tabs ───────────────────────────────────────────── */
+    .tabs {
+      display: flex;
+      gap: 6px;
+      padding: 10px 16px 0;
+    }
+    .tab {
+      flex: 1;
+      padding: 8px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--surface);
+      color: var(--muted);
+      font-size: 0.82rem;
+      cursor: pointer;
+      text-align: center;
+      transition: all 0.15s;
+      direction: ltr;
+    }
+    .tab.active {
+      background: #1e3a2a;
+      color: var(--accent);
+      border-color: #2a5a3a;
+    }
+
+    /* ── Now Reading banner ─────────────────────────────── */
+    .now-reading {
+      margin: 10px 16px 0;
+      padding: 10px 14px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+    }
+    .now-reading-info { flex: 1; }
+    .now-reading-label { font-size: 0.7rem; color: var(--muted); direction: ltr; }
+    .now-reading-surah {
+      font-size: 1.1rem;
+      font-family: 'Amiri', serif;
+      color: var(--accent);
+      direction: rtl;
+      margin-top: 2px;
+    }
+    .now-reading-page { font-size: 0.75rem; color: var(--muted); direction: ltr; }
+    .btn-goto {
+      padding: 8px 14px;
+      background: var(--accent);
+      color: #000;
+      border: none;
+      border-radius: 8px;
+      font-size: 0.82rem;
+      font-weight: 700;
+      cursor: pointer;
+      white-space: nowrap;
+      direction: ltr;
+      transition: opacity 0.15s;
+    }
+    .btn-goto:active { opacity: 0.7; }
+    .btn-refresh {
+      padding: 8px 14px;
+      background: #1a2a3a;
+      color: #4fc3f7;
+      border: 1px solid #2a4a5a;
+      border-radius: 8px;
+      font-size: 0.82rem;
+      font-weight: 700;
+      cursor: pointer;
+      white-space: nowrap;
+      direction: ltr;
+      transition: opacity 0.15s;
+    }
+    .btn-refresh:active { opacity: 0.7; }
+    .now-reading-btns {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    /* ── Section ────────────────────────────────────────── */
+    .section-label {
+      padding: 14px 16px 6px;
+      font-size: 0.72rem;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      direction: ltr;
+    }
+
+    /* ── Surah list ─────────────────────────────────────── */
+    .surah-list {
+      padding: 0 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+    .surah-item {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 10px 12px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      cursor: pointer;
+      transition: border-color 0.12s, background 0.12s;
+    }
+    .surah-item:active { background: #222; }
+    .surah-item.current {
+      border-color: var(--accent);
+      background: #1e3a2a;
+    }
+    .surah-num {
+      width: 32px; height: 32px;
+      border-radius: 50%;
+      background: #252525;
+      border: 1px solid var(--border);
+      display: flex; align-items: center; justify-content: center;
+      font-size: 0.75rem;
+      color: var(--muted);
+      flex-shrink: 0;
+      direction: ltr;
+    }
+    .surah-item.current .surah-num {
+      background: var(--accent);
+      color: #000;
+      border-color: var(--accent);
+      font-weight: 700;
+    }
+    .surah-name {
+      flex: 1;
+      font-family: 'Amiri', serif;
+      font-size: 1.15rem;
+      direction: rtl;
+      text-align: right;
+    }
+    .surah-page {
+      font-size: 0.72rem;
+      color: var(--muted);
+      direction: ltr;
+    }
+
+    /* ── Page jump tab ──────────────────────────────────── */
+    .page-jump {
+      padding: 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+    .page-jump label {
+      font-size: 0.82rem;
+      color: var(--muted);
+      direction: ltr;
+    }
+    .page-jump-row {
+      display: flex;
+      gap: 8px;
+    }
+    .page-jump input[type=number] {
+      flex: 1;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 10px 14px;
+      color: var(--text);
+      font-size: 1.1rem;
+      outline: none;
+      direction: ltr;
+    }
+    .page-jump input[type=number]:focus { border-color: var(--accent); }
+    .btn-send {
+      padding: 10px 20px;
+      background: var(--accent);
+      color: #000;
+      border: none;
+      border-radius: 8px;
+      font-size: 0.9rem;
+      font-weight: 700;
+      cursor: pointer;
+      direction: ltr;
+      transition: opacity 0.15s;
+    }
+    .btn-send:active { opacity: 0.7; }
+    .page-hint {
+      font-size: 0.75rem;
+      color: var(--muted);
+      direction: ltr;
+    }
+
+    /* ── Juz grid ───────────────────────────────────────── */
+    .juz-grid {
+      padding: 0 16px;
+      display: grid;
+      grid-template-columns: repeat(5, 1fr);
+      gap: 6px;
+    }
+    .juz-item {
+      padding: 10px 4px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      text-align: center;
+      cursor: pointer;
+      transition: border-color 0.12s, background 0.12s;
+      direction: ltr;
+    }
+    .juz-item:active { background: #222; }
+    .juz-item.current { border-color: var(--accent); background: #1e3a2a; }
+    .juz-num { font-size: 1rem; font-weight: 700; color: var(--text); }
+    .juz-page { font-size: 0.65rem; color: var(--muted); }
+
+    /* ── Toast ──────────────────────────────────────────── */
+    .toast {
+      position: fixed;
+      bottom: 20px;
+      left: 50%;
+      transform: translateX(-50%) translateY(80px);
+      background: #1e3a2a;
+      color: var(--accent);
+      border: 1px solid #2a5a3a;
+      padding: 10px 20px;
+      border-radius: 20px;
+      font-size: 0.85rem;
+      direction: ltr;
+      transition: transform 0.25s ease;
+      z-index: 100;
+      white-space: nowrap;
+    }
+    .toast.show { transform: translateX(-50%) translateY(0); }
+
+    /* ── Empty state ────────────────────────────────────── */
+    .empty {
+      padding: 40px 16px;
+      text-align: center;
+      color: var(--muted);
+      font-size: 0.9rem;
+      direction: ltr;
+    }
+
+    /* ── Reading Mode panel ─────────────────────────────── */
+    .reading-mode-panel {
+      margin: 8px 16px 0;
+      padding: 12px 14px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      direction: ltr;
+    }
+    .reading-mode-panel.active {
+      border-color: #f57c00;
+      background: #1e1400;
+    }
+    .rm-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+    }
+    .rm-title {
+      font-size: 0.82rem;
+      font-weight: 700;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+    .reading-mode-panel.active .rm-title { color: #f57c00; }
+    .btn-rm-toggle {
+      padding: 7px 16px;
+      border: none;
+      border-radius: 8px;
+      font-size: 0.82rem;
+      font-weight: 700;
+      cursor: pointer;
+      direction: ltr;
+      transition: all 0.15s;
+      background: #1e3a2a;
+      color: var(--accent);
+      border: 1px solid #2a5a3a;
+    }
+    .btn-rm-toggle.active {
+      background: #f57c00;
+      color: #000;
+      border-color: #f57c00;
+    }
+    .btn-rm-toggle:active { opacity: 0.7; }
+    /* Speed selector row */
+    .rm-speed-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-top: 10px;
+    }
+    .rm-speed-label { font-size: 0.75rem; color: var(--muted); }
+    .rm-speed-btns { display: flex; gap: 4px; }
+    .btn-speed {
+      padding: 5px 11px;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      background: var(--surface);
+      color: var(--muted);
+      font-size: 0.78rem;
+      cursor: pointer;
+      transition: all 0.12s;
+    }
+    .btn-speed.selected {
+      background: #2a2000;
+      color: #f57c00;
+      border-color: #f57c00;
+    }
+    /* Progress bar */
+    .rm-progress-wrap {
+      margin-top: 10px;
+      height: 4px;
+      background: #2e2e2e;
+      border-radius: 2px;
+      overflow: hidden;
+      display: none;
+    }
+    .reading-mode-panel.active .rm-progress-wrap { display: block; }
+    .rm-progress-bar {
+      height: 100%;
+      background: #f57c00;
+      border-radius: 2px;
+      width: 100%;
+      transition: width 1s linear;
+    }
+    /* Countdown text */
+    .rm-countdown {
+      margin-top: 6px;
+      font-size: 0.72rem;
+      color: var(--muted);
+      display: none;
+    }
+    .reading-mode-panel.active .rm-countdown { display: block; }
+  </style>
+</head>
+<body>
+<div class="app">
+
+  <!-- Header -->
+  <div class="header">
+    <div class="header-top">
+      <div class="logo">
+        <div class="logo-icon">
+          <img src="/icon-quran-72.png" alt="Quran icon" />
+        </div>
+        <div class="logo-text">
+          <h1>Noor <span>Quran</span></h1>
+          <p>Even Realities G2</p>
+        </div>
+      </div>
+      <span class="status-badge connecting" id="statusBadge">Connecting…</span>
+    </div>
+    <div class="search-wrap" id="searchWrap">
+      <input type="text" id="searchInput" placeholder="Search surah…" autocomplete="off" />
+      <span class="search-icon">🔍</span>
+    </div>
+  </div>
+
+  <!-- Tabs -->
+  <div class="tabs">
+    <button class="tab active" id="tabSurahs" onclick="showTab('surahs')">Surahs</button>
+    <button class="tab" id="tabJuz"    onclick="showTab('juz')">Juz</button>
+    <button class="tab" id="tabPage"   onclick="showTab('page')">Page</button>
+  </div>
+
+  <!-- Now Reading -->
+  <div class="now-reading" id="nowReading">
+    <div class="now-reading-info">
+      <div class="now-reading-label">Now reading</div>
+      <div class="now-reading-surah" id="nowSurahName">—</div>
+      <div class="now-reading-page" id="nowPageNum">Page —</div>
+    </div>
+    <div class="now-reading-btns">
+      <button class="btn-goto" onclick="goToCurrentPosition()">↗ Go to</button>
+      <button class="btn-refresh" onclick="refreshDisplay()" id="btnRefresh">⟳ Refresh</button>
+    </div>
+  </div>
+
+  <!-- Reading Mode panel -->
+  <div class="reading-mode-panel" id="readingModePanel">
+    <div class="rm-header">
+      <div>
+        <div class="rm-title">📖 Reading Mode</div>
+      </div>
+      <button class="btn-rm-toggle" id="btnReadingMode" onclick="toggleReadingMode()">▶ Start</button>
+    </div>
+    <div class="rm-speed-row">
+      <span class="rm-speed-label">Tile duration:</span>
+      <div class="rm-speed-btns">
+        <button class="btn-speed" data-secs="15" onclick="setReadingSpeed(15)">15s</button>
+        <button class="btn-speed selected" data-secs="25" onclick="setReadingSpeed(25)">25s</button>
+        <button class="btn-speed" data-secs="45" onclick="setReadingSpeed(45)">45s</button>
+        <button class="btn-speed" data-secs="60" onclick="setReadingSpeed(60)">60s</button>
+      </div>
+    </div>
+    <div class="rm-progress-wrap">
+      <div class="rm-progress-bar" id="rmProgressBar"></div>
+    </div>
+    <div class="rm-countdown" id="rmCountdown">Next tile in 25s</div>
+  </div>
+
+  <!-- Surah list tab -->
+  <div id="panelSurahs">
+    <div class="section-label">All Surahs</div>
+    <div class="surah-list" id="surahList"></div>
+    <div class="empty" id="surahEmpty" style="display:none">No surahs match your search.</div>
+  </div>
+
+  <!-- Juz tab -->
+  <div id="panelJuz" style="display:none">
+    <div class="section-label">Jump to Juz</div>
+    <div class="juz-grid" id="juzGrid"></div>
+  </div>
+
+  <!-- Page jump tab -->
+  <div id="panelPage" style="display:none">
+    <div class="page-jump">
+      <label for="pageInput">Enter page number (1 – 604)</label>
+      <div class="page-jump-row">
+        <input type="number" id="pageInput" min="1" max="604" placeholder="e.g. 50" />
+        <button class="btn-send" onclick="sendPage()">Send to Glasses</button>
+      </div>
+      <div class="page-hint">The glasses will jump to the specified page immediately.</div>
+    </div>
+  </div>
+
+</div>
+
+<!-- Toast notification -->
+<div class="toast" id="toast"></div>
+
+<script type="module" src="/src/main.ts"></script>
+<script>
+// ── Surah data (mirrors the SURAHS array in main.ts) ──────────────────────────
+const SURAHS = [
+  [1,'الفاتحة',1],[2,'البقرة',2],[3,'آل عمران',50],[4,'النساء',77],[5,'المائدة',106],
+  [6,'الأنعام',128],[7,'الأعراف',151],[8,'الأنفال',177],[9,'التوبة',187],[10,'يونس',208],
+  [11,'هود',221],[12,'يوسف',235],[13,'الرعد',249],[14,'إبراهيم',255],[15,'الحجر',262],
+  [16,'النحل',267],[17,'الإسراء',282],[18,'الكهف',293],[19,'مريم',305],[20,'طه',312],
+  [21,'الأنبياء',322],[22,'الحج',332],[23,'المؤمنون',342],[24,'النور',350],[25,'الفرقان',359],
+  [26,'الشعراء',367],[27,'النمل',377],[28,'القصص',385],[29,'العنكبوت',396],[30,'الروم',404],
+  [31,'لقمان',411],[32,'السجدة',415],[33,'الأحزاب',418],[34,'سبأ',428],[35,'فاطر',434],
+  [36,'يس',440],[37,'الصافات',446],[38,'ص',453],[39,'الزمر',458],[40,'غافر',467],
+  [41,'فصلت',477],[42,'الشورى',483],[43,'الزخرف',489],[44,'الدخان',496],[45,'الجاثية',499],
+  [46,'الأحقاف',502],[47,'محمد',507],[48,'الفتح',511],[49,'الحجرات',515],[50,'ق',518],
+  [51,'الذاريات',520],[52,'الطور',523],[53,'النجم',526],[54,'القمر',528],[55,'الرحمن',531],
+  [56,'الواقعة',534],[57,'الحديد',537],[58,'المجادلة',542],[59,'الحشر',545],[60,'الممتحنة',549],
+  [61,'الصف',551],[62,'الجمعة',553],[63,'المنافقون',554],[64,'التغابن',556],[65,'الطلاق',558],
+  [66,'التحريم',560],[67,'الملك',562],[68,'القلم',564],[69,'الحاقة',566],[70,'المعارج',568],
+  [71,'نوح',570],[72,'الجن',572],[73,'المزمل',574],[74,'المدثر',575],[75,'القيامة',577],
+  [76,'الإنسان',578],[77,'المرسلات',580],[78,'النبأ',582],[79,'النازعات',583],[80,'عبس',585],
+  [81,'التكوير',586],[82,'الانفطار',587],[83,'المطففين',587],[84,'الانشقاق',589],[85,'البروج',590],
+  [86,'الطارق',591],[87,'الأعلى',591],[88,'الغاشية',592],[89,'الفجر',593],[90,'البلد',594],
+  [91,'الشمس',595],[92,'الليل',595],[93,'الضحى',596],[94,'الشرح',596],[95,'التين',597],
+  [96,'العلق',597],[97,'القدر',598],[98,'البينة',598],[99,'الزلزلة',599],[100,'العاديات',599],
+  [101,'القارعة',600],[102,'التكاثر',600],[103,'العصر',601],[104,'الهمزة',601],[105,'الفيل',601],
+  [106,'قريش',602],[107,'الماعون',602],[108,'الكوثر',602],[109,'الكافرون',603],[110,'النصر',603],
+  [111,'المسد',603],[112,'الإخلاص',604],[113,'الفلق',604],[114,'الناس',604],
+]
+
+// Juz start pages (standard Hafs Mushaf)
+const JUZ_PAGES = [
+  1,22,42,62,82,102,121,142,162,182,
+  201,222,242,262,282,302,322,342,362,382,
+  402,422,442,462,482,502,522,542,562,582
+]
+
+// ── State ─────────────────────────────────────────────────────────────────────
+let currentTab = 'surahs'
+let currentSurahIdx = 0  // 0-based index into SURAHS
+let noorReady = false
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+function getSurahForPage(page) {
+  let best = 0
+  for (let i = 0; i < SURAHS.length; i++) {
+    if (SURAHS[i][2] <= page) best = i
+    else break
+  }
+  return best
+}
+
+function showToast(msg) {
+  const t = document.getElementById('toast')
+  t.textContent = msg
+  t.classList.add('show')
+  setTimeout(() => t.classList.remove('show'), 2200)
+}
+
+function updateNowReading() {
+  if (!window.noor) return
+  const page = window.noor.page || 1
+  // Use the explicitly tracked surah number when available (set by G2 selector or jumpToSurah).
+  // Fall back to page-based derivation only when no surah has been explicitly selected.
+  const surahNum = window.noor.surahNum || 0
+  let idx
+  if (surahNum > 0) {
+    // Find the exact surah index by surah number — avoids the shared-page ambiguity bug
+    idx = SURAHS.findIndex(s => s[0] === surahNum)
+    if (idx < 0) idx = getSurahForPage(page)  // fallback
+  } else {
+    idx = getSurahForPage(page)
+  }
+  currentSurahIdx = idx
+  document.getElementById('nowSurahName').textContent = SURAHS[idx][1]
+  document.getElementById('nowPageNum').textContent = `Page ${page} · Surah ${SURAHS[idx][0]}`
+  // Highlight current surah in list
+  document.querySelectorAll('.surah-item').forEach((el, i) => {
+    el.classList.toggle('current', i === idx)
+    el.querySelector('.surah-num').style.background = i === idx ? 'var(--accent)' : ''
+  })
+  // Highlight current juz
+  const juzIdx = JUZ_PAGES.reduce((best, p, i) => p <= page ? i : best, 0)
+  document.querySelectorAll('.juz-item').forEach((el, i) => {
+    el.classList.toggle('current', i === juzIdx)
+  })
+}
+
+// Poll for noor readiness and keep "now reading" updated
+function pollNoor() {
+  const badge = document.getElementById('statusBadge')
+  if (window.noor) {
+    if (!noorReady) {
+      noorReady = true
+      badge.textContent = 'Connected'
+      badge.className = 'status-badge'
+      updateNowReading()
+    }
+  } else {
+    badge.textContent = 'Connecting…'
+    badge.className = 'status-badge connecting'
+  }
+  setTimeout(pollNoor, 500)
+}
+
+// ── Navigation ────────────────────────────────────────────────────────────────
+function jumpToSurah(idx) {
+  if (!window.noor) { showToast('Glasses not connected yet'); return }
+  const [num, name, page] = SURAHS[idx]
+  // jumpToSurah navigates to the surah's first page, screen 0
+  window.noor.jumpToSurah(num)
+  currentSurahIdx = idx
+  updateNowReading()
+  showToast(`Jumped to ${name}`)
+}
+
+function jumpToJuz(juzIdx) {
+  if (!window.noor) { showToast('Glasses not connected yet'); return }
+  const page = JUZ_PAGES[juzIdx]
+  window.noor.jumpToPage(page)
+  updateNowReading()
+  showToast(`Jumped to Juz ${juzIdx + 1}`)
+}
+
+function sendPage() {
+  if (!window.noor) { showToast('Glasses not connected yet'); return }
+  const val = parseInt(document.getElementById('pageInput').value, 10)
+  if (!val || val < 1 || val > 604) { showToast('Enter a page between 1 and 604'); return }
+  window.noor.jumpToPage(val)
+  updateNowReading()
+  showToast(`Jumped to page ${val}`)
+}
+
+function goToCurrentPosition() {
+  if (!window.noor) { showToast('Glasses not connected yet'); return }
+  updateNowReading()
+  showToast('Already at current position')
+}
+
+function refreshDisplay() {
+  if (!window.noor) { showToast('Glasses not connected yet'); return }
+  const btn = document.getElementById('btnRefresh')
+  btn.textContent = '…'
+  btn.disabled = true
+  window.noor.refresh()
+  setTimeout(() => {
+    btn.textContent = '⟳ Refresh'
+    btn.disabled = false
+  }, 2000)
+  showToast('Display refreshed')
+}
+
+// ── Tabs ──────────────────────────────────────────────────────────────────────
+function showTab(tab) {
+  currentTab = tab
+  document.getElementById('panelSurahs').style.display = tab === 'surahs' ? '' : 'none'
+  document.getElementById('panelJuz').style.display    = tab === 'juz'    ? '' : 'none'
+  document.getElementById('panelPage').style.display   = tab === 'page'   ? '' : 'none'
+  document.getElementById('searchWrap').style.display  = tab === 'surahs' ? '' : 'none'
+  document.getElementById('tabSurahs').classList.toggle('active', tab === 'surahs')
+  document.getElementById('tabJuz').classList.toggle('active', tab === 'juz')
+  document.getElementById('tabPage').classList.toggle('active', tab === 'page')
+}
+
+// ── Search ────────────────────────────────────────────────────────────────────
+document.getElementById('searchInput').addEventListener('input', function() {
+  const q = this.value.trim().toLowerCase()
+  let visible = 0
+  document.querySelectorAll('.surah-item').forEach((el, i) => {
+    const name = SURAHS[i][1]
+    const num  = String(SURAHS[i][0])
+    const show = !q || name.includes(q) || num.includes(q)
+    el.style.display = show ? '' : 'none'
+    if (show) visible++
+  })
+  document.getElementById('surahEmpty').style.display = visible === 0 ? '' : 'none'
+})
+
+// ── Build surah list ──────────────────────────────────────────────────────────
+function buildSurahList() {
+  const list = document.getElementById('surahList')
+  SURAHS.forEach(([num, name, page], idx) => {
+    const item = document.createElement('div')
+    item.className = 'surah-item'
+    item.innerHTML = `
+      <div class="surah-num">${num}</div>
+      <div class="surah-name">${name}</div>
+      <div class="surah-page">p.${page}</div>
+    `
+    item.addEventListener('click', () => jumpToSurah(idx))
+    list.appendChild(item)
+  })
+}
+
+// ── Build juz grid ────────────────────────────────────────────────────────────
+function buildJuzGrid() {
+  const grid = document.getElementById('juzGrid')
+  JUZ_PAGES.forEach((page, i) => {
+    const item = document.createElement('div')
+    item.className = 'juz-item'
+    item.innerHTML = `<div class="juz-num">${i + 1}</div><div class="juz-page">p.${page}</div>`
+    item.addEventListener('click', () => jumpToJuz(i))
+    grid.appendChild(item)
+  })
+}
+
+// ── Reading Mode ─────────────────────────────────────────────────────────────
+let readingModeActive  = false
+let readingModeSpeed   = 25        // seconds per tile
+let rmIntervalId       = null
+let rmCountdownId      = null
+let rmSecondsLeft      = 25
+
+function setReadingSpeed(secs) {
+  readingModeSpeed = secs
+  rmSecondsLeft    = secs
+  document.querySelectorAll('.btn-speed').forEach(b => {
+    b.classList.toggle('selected', parseInt(b.dataset.secs) === secs)
+  })
+  // If already running, restart the timer at the new speed
+  if (readingModeActive) {
+    stopReadingMode()
+    startReadingMode()
+  }
+}
+
+function startReadingMode() {
+  if (!window.noor) { showToast('Glasses not connected yet'); return }
+  readingModeActive = true
+  rmSecondsLeft     = readingModeSpeed
+
+  const panel  = document.getElementById('readingModePanel')
+  const btn    = document.getElementById('btnReadingMode')
+  const bar    = document.getElementById('rmProgressBar')
+  const cdText = document.getElementById('rmCountdown')
+
+  panel.classList.add('active')
+  btn.classList.add('active')
+  btn.textContent = '⏹ Stop'
+
+  // Reset progress bar to full width immediately
+  bar.style.transition = 'none'
+  bar.style.width = '100%'
+  // Force reflow then animate down to 0 over readingModeSpeed seconds
+  requestAnimationFrame(() => {
+    requestAnimationFrame(() => {
+      bar.style.transition = `width ${readingModeSpeed}s linear`
+      bar.style.width = '0%'
+    })
+  })
+
+  cdText.textContent = `Next tile in ${rmSecondsLeft}s`
+
+  // Countdown every second
+  rmCountdownId = setInterval(() => {
+    rmSecondsLeft--
+    if (rmSecondsLeft <= 0) rmSecondsLeft = readingModeSpeed
+    cdText.textContent = `Next tile in ${rmSecondsLeft}s`
+  }, 1000)
+
+  // Advance tile every readingModeSpeed seconds
+  rmIntervalId = setInterval(() => {
+    if (!window.noor) { stopReadingMode(); return }
+    window.noor.nextScreen()
+    // Reset progress bar
+    bar.style.transition = 'none'
+    bar.style.width = '100%'
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        bar.style.transition = `width ${readingModeSpeed}s linear`
+        bar.style.width = '0%'
+      })
+    })
+    rmSecondsLeft = readingModeSpeed
+    cdText.textContent = `Next tile in ${rmSecondsLeft}s`
+    // Update now-reading after a short delay (let the glasses render first)
+    setTimeout(() => updateNowReading(), 800)
+  }, readingModeSpeed * 1000)
+}
+
+function stopReadingMode() {
+  readingModeActive = false
+  if (rmIntervalId)  { clearInterval(rmIntervalId);  rmIntervalId  = null }
+  if (rmCountdownId) { clearInterval(rmCountdownId); rmCountdownId = null }
+
+  const panel  = document.getElementById('readingModePanel')
+  const btn    = document.getElementById('btnReadingMode')
+  const bar    = document.getElementById('rmProgressBar')
+
+  panel.classList.remove('active')
+  btn.classList.remove('active')
+  btn.textContent = '▶ Start'
+
+  // Reset bar
+  bar.style.transition = 'none'
+  bar.style.width = '100%'
+}
+
+function toggleReadingMode() {
+  if (readingModeActive) {
+    stopReadingMode()
+    showToast('Reading Mode stopped')
+  } else {
+    startReadingMode()
+    showToast(`Reading Mode started — ${readingModeSpeed}s per tile`)
+  }
+}
+
+// ── Init ──────────────────────────────────────────────────────────────────────
+buildSurahList()
+buildJuzGrid()
+pollNoor()
+</script>
+</body>
+</html>
