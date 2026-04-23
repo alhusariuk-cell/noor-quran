@@ -21,12 +21,14 @@
  *   READING mode:
  *     Swipe forward  → next screen / next page
  *     Swipe back     → previous screen / previous page
- *     Double tap     → enter SELECTOR mode
+ *     Single tap     → enter SELECTOR mode
+ *     Double tap     → exit plugin
  *
  *   SELECTOR mode:
  *     Swipe forward  → highlight next surah
  *     Swipe back     → highlight previous surah
- *     Double tap     → confirm → jump to highlighted surah → READING
+ *     Single tap     → confirm → jump to highlighted surah → READING
+ *     Double tap     → cancel → return to READING
  */
 
 import {
@@ -668,12 +670,20 @@ async function setupNavigation(): Promise<void> {
         goNext(); break
       }
       case 0:
-        break  // single tap — no-op
-      case 3:
+        // Single tap → enter selector (reading mode) / confirm selection (selector mode)
         if (mode === 'reading') {
           if (Date.now() - selectorConfirmedAt > CONFIRM_COOLDOWN_MS) enterSelector()
         } else if (mode === 'selector') {
           confirmSelector()
+        }
+        break
+      case 3:
+        // Double tap → exit plugin (reading mode) / cancel selector (selector mode)
+        if (mode === 'selector') {
+          mode = 'reading'
+          renderReadingView()
+        } else {
+          bridge.shutDownPageContainer(0)
         }
         break
       case 4:

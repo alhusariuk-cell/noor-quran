@@ -2,7 +2,7 @@
   "package_id": "com.noor.quran",
   "edition": "202601",
   "name": "Noor Quran",
-  "version": "4.0.5",
+  "version": "4.0.6",
   "min_app_version": "1.0.0",
   "min_sdk_version": "0.0.10",
   "entrypoint": "index.html",
