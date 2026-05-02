@@ -8,7 +8,6 @@
   <link href="https://fonts.googleapis.com/css2?family=Amiri:wght@400;700&display=swap" rel="stylesheet" />
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-
     :root {
       --bg:       #0d0d0d;
       --surface:  #1a1a1a;
@@ -20,7 +19,6 @@
       --danger:   #ef5350;
       --radius:   12px;
     }
-
     html, body {
       height: 100%;
       background: var(--bg);
@@ -28,7 +26,6 @@
       font-family: 'Segoe UI', system-ui, sans-serif;
       font-size: 15px;
     }
-
     /* ── Layout ─────────────────────────────────────────── */
     .app {
       max-width: 480px;
@@ -38,7 +35,6 @@
       flex-direction: column;
       min-height: 100%;
     }
-
     /* ── Header ─────────────────────────────────────────── */
     .header {
       position: sticky;
@@ -93,7 +89,19 @@
     }
     .status-badge.connecting { background: #2a2a1e; color: #ffd740; border-color: #5a4a1e; }
     .status-badge.error      { background: #3a1e1e; color: var(--danger); border-color: #5a2a2a; }
-
+    .btn-exit-app {
+      font-size: 0.8rem;
+      font-weight: 600;
+      padding: 5px 13px;
+      border-radius: 20px;
+      background: #c62828;
+      color: #fff;
+      border: none;
+      cursor: pointer;
+      direction: ltr;
+      margin-left: 8px;
+    }
+    .btn-exit-app:active { background: #b71c1c; }
     /* ── Search ─────────────────────────────────────────── */
     .search-wrap {
       position: relative;
@@ -119,7 +127,6 @@
       font-size: 14px;
       pointer-events: none;
     }
-
     /* ── Tabs ───────────────────────────────────────────── */
     .tabs {
       display: flex;
@@ -144,7 +151,6 @@
       color: var(--accent);
       border-color: #2a5a3a;
     }
-
     /* ── Now Reading banner ─────────────────────────────── */
     .now-reading {
       margin: 10px 16px 0;
@@ -200,7 +206,6 @@
       flex-direction: column;
       gap: 6px;
     }
-
     /* ── Section ────────────────────────────────────────── */
     .section-label {
       padding: 14px 16px 6px;
@@ -210,7 +215,6 @@
       letter-spacing: 0.06em;
       direction: ltr;
     }
-
     /* ── Surah list ─────────────────────────────────────── */
     .surah-list {
       padding: 0 16px;
@@ -263,7 +267,6 @@
       color: var(--muted);
       direction: ltr;
     }
-
     /* ── Page jump tab ──────────────────────────────────── */
     .page-jump {
       padding: 16px;
@@ -310,7 +313,6 @@
       color: var(--muted);
       direction: ltr;
     }
-
     /* ── Juz grid ───────────────────────────────────────── */
     .juz-grid {
       padding: 0 16px;
@@ -332,7 +334,6 @@
     .juz-item.current { border-color: var(--accent); background: #1e3a2a; }
     .juz-num { font-size: 1rem; font-weight: 700; color: var(--text); }
     .juz-page { font-size: 0.65rem; color: var(--muted); }
-
     /* ── Toast ──────────────────────────────────────────── */
     .toast {
       position: fixed;
@@ -351,7 +352,6 @@
       white-space: nowrap;
     }
     .toast.show { transform: translateX(-50%) translateY(0); }
-
     /* ── Empty state ────────────────────────────────────── */
     .empty {
       padding: 40px 16px;
@@ -360,7 +360,6 @@
       font-size: 0.9rem;
       direction: ltr;
     }
-
     /* ── Reading Mode panel ─────────────────────────────── */
     .reading-mode-panel {
       margin: 8px 16px 0;
@@ -407,7 +406,6 @@
       border-color: #f57c00;
     }
     .btn-rm-toggle:active { opacity: 0.7; }
-    /* Speed selector row */
     .rm-speed-row {
       display: flex;
       align-items: center;
@@ -431,7 +429,6 @@
       color: #f57c00;
       border-color: #f57c00;
     }
-    /* Progress bar */
     .rm-progress-wrap {
       margin-top: 10px;
       height: 4px;
@@ -448,7 +445,6 @@
       width: 100%;
       transition: width 1s linear;
     }
-    /* Countdown text */
     .rm-countdown {
       margin-top: 6px;
       font-size: 0.72rem;
@@ -460,7 +456,6 @@
 </head>
 <body>
 <div class="app">
-
   <!-- Header -->
   <div class="header">
     <div class="header-top">
@@ -474,20 +469,19 @@
         </div>
       </div>
       <span class="status-badge connecting" id="statusBadge">Connecting…</span>
+      <button class="btn-exit-app" onclick="showExitDialog()" title="Exit Noor Quran">✕ Exit</button>
     </div>
     <div class="search-wrap" id="searchWrap">
       <input type="text" id="searchInput" placeholder="Search surah…" autocomplete="off" />
       <span class="search-icon">🔍</span>
     </div>
   </div>
-
   <!-- Tabs -->
   <div class="tabs">
     <button class="tab active" id="tabSurahs" onclick="showTab('surahs')">Surahs</button>
     <button class="tab" id="tabJuz"    onclick="showTab('juz')">Juz</button>
     <button class="tab" id="tabPage"   onclick="showTab('page')">Page</button>
   </div>
-
   <!-- Now Reading -->
   <div class="now-reading" id="nowReading">
     <div class="now-reading-info">
@@ -500,7 +494,6 @@
       <button class="btn-refresh" onclick="refreshDisplay()" id="btnRefresh">⟳ Refresh</button>
     </div>
   </div>
-
   <!-- Reading Mode panel -->
   <div class="reading-mode-panel" id="readingModePanel">
     <div class="rm-header">
@@ -523,20 +516,17 @@
     </div>
     <div class="rm-countdown" id="rmCountdown">Next tile in 25s</div>
   </div>
-
   <!-- Surah list tab -->
   <div id="panelSurahs">
     <div class="section-label">All Surahs</div>
     <div class="surah-list" id="surahList"></div>
     <div class="empty" id="surahEmpty" style="display:none">No surahs match your search.</div>
   </div>
-
   <!-- Juz tab -->
   <div id="panelJuz" style="display:none">
     <div class="section-label">Jump to Juz</div>
     <div class="juz-grid" id="juzGrid"></div>
   </div>
-
   <!-- Page jump tab -->
   <div id="panelPage" style="display:none">
     <div class="page-jump">
@@ -548,15 +538,12 @@
       <div class="page-hint">The glasses will jump to the specified page immediately.</div>
     </div>
   </div>
-
 </div>
-
 <!-- Toast notification -->
 <div class="toast" id="toast"></div>
-
 <script type="module" src="/src/main.ts"></script>
 <script>
-// ── Surah data (mirrors the SURAHS array in main.ts) ──────────────────────────
+// ── Surah data ────────────────────────────────────────────────────────────────
 const SURAHS = [
   [1,'الفاتحة',1],[2,'البقرة',2],[3,'آل عمران',50],[4,'النساء',77],[5,'المائدة',106],
   [6,'الأنعام',128],[7,'الأعراف',151],[8,'الأنفال',177],[9,'التوبة',187],[10,'يونس',208],
@@ -582,19 +569,16 @@ const SURAHS = [
   [106,'قريش',602],[107,'الماعون',602],[108,'الكوثر',602],[109,'الكافرون',603],[110,'النصر',603],
   [111,'المسد',603],[112,'الإخلاص',604],[113,'الفلق',604],[114,'الناس',604],
 ]
-
 // Juz start pages (standard Hafs Mushaf)
 const JUZ_PAGES = [
   1,22,42,62,82,102,121,142,162,182,
   201,222,242,262,282,302,322,342,362,382,
   402,422,442,462,482,502,522,542,562,582
 ]
-
 // ── State ─────────────────────────────────────────────────────────────────────
 let currentTab = 'surahs'
-let currentSurahIdx = 0  // 0-based index into SURAHS
+let currentSurahIdx = 0
 let noorReady = false
-
 // ── Helpers ───────────────────────────────────────────────────────────────────
 function getSurahForPage(page) {
   let best = 0
@@ -604,46 +588,44 @@ function getSurahForPage(page) {
   }
   return best
 }
-
 function showToast(msg) {
   const t = document.getElementById('toast')
   t.textContent = msg
   t.classList.add('show')
   setTimeout(() => t.classList.remove('show'), 2200)
 }
-
 function updateNowReading() {
   if (!window.noor) return
   const page = window.noor.page || 1
-  // Use the explicitly tracked surah number when available (set by G2 selector or jumpToSurah).
-  // Fall back to page-based derivation only when no surah has been explicitly selected.
   const surahNum = window.noor.surahNum || 0
   let idx
   if (surahNum > 0) {
-    // Find the exact surah index by surah number — avoids the shared-page ambiguity bug
     idx = SURAHS.findIndex(s => s[0] === surahNum)
-    if (idx < 0) idx = getSurahForPage(page)  // fallback
+    if (idx < 0) idx = getSurahForPage(page)
   } else {
     idx = getSurahForPage(page)
   }
   currentSurahIdx = idx
   document.getElementById('nowSurahName').textContent = SURAHS[idx][1]
-  document.getElementById('nowPageNum').textContent = `Page ${page} · Surah ${SURAHS[idx][0]}`
+  document.getElementById('nowPageNum').textContent = 'Page ' + page + ' · Surah ' + SURAHS[idx][0]
   // Highlight current surah in list
-  document.querySelectorAll('.surah-item').forEach((el, i) => {
+  document.querySelectorAll('.surah-item').forEach(function(el, i) {
     el.classList.toggle('current', i === idx)
     el.querySelector('.surah-num').style.background = i === idx ? 'var(--accent)' : ''
   })
   // Highlight current juz
-  const juzIdx = JUZ_PAGES.reduce((best, p, i) => p <= page ? i : best, 0)
-  document.querySelectorAll('.juz-item').forEach((el, i) => {
+  const juzIdx = JUZ_PAGES.reduce(function(best, p, i) { return p <= page ? i : best }, 0)
+  document.querySelectorAll('.juz-item').forEach(function(el, i) {
     el.classList.toggle('current', i === juzIdx)
   })
 }
-
-// Poll for noor readiness and keep "now reading" updated
-function pollNoor() {
-  const badge = document.getElementById('statusBadge')
+// ── Status polling — uses setInterval (NOT recursive setTimeout) to avoid
+//    unbounded timer-handle accumulation on iOS WKWebView (crash fix).
+//    Stops automatically once connected and "now reading" is updated.
+// ─────────────────────────────────────────────────────────────────────────────
+var _pollInterval = setInterval(function() {
+  var badge = document.getElementById('statusBadge')
+  if (!badge) { clearInterval(_pollInterval); return }
   if (window.noor) {
     if (!noorReady) {
       noorReady = true
@@ -651,60 +633,46 @@ function pollNoor() {
       badge.className = 'status-badge'
       updateNowReading()
     }
+    // Keep now-reading updated while connected (poll every 2s instead of 500ms)
+    updateNowReading()
   } else {
     badge.textContent = 'Connecting…'
     badge.className = 'status-badge connecting'
   }
-  setTimeout(pollNoor, 500)
-}
-
+}, 2000)
 // ── Navigation ────────────────────────────────────────────────────────────────
 function jumpToSurah(idx) {
   if (!window.noor) { showToast('Glasses not connected yet'); return }
-  const [num, name, page] = SURAHS[idx]
-  // jumpToSurah navigates to the surah's first page, screen 0
-  window.noor.jumpToSurah(num)
+  const s = SURAHS[idx]
+  window.noor.jumpToSurah(s[0])
   currentSurahIdx = idx
   updateNowReading()
-  showToast(`Jumped to ${name}`)
+  showToast('Jumped to ' + s[1])
 }
-
 function jumpToJuz(juzIdx) {
   if (!window.noor) { showToast('Glasses not connected yet'); return }
   const page = JUZ_PAGES[juzIdx]
   window.noor.jumpToPage(page)
   updateNowReading()
-  showToast(`Jumped to Juz ${juzIdx + 1}`)
+  showToast('Jumped to Juz ' + (juzIdx + 1))
 }
-
 function sendPage() {
   if (!window.noor) { showToast('Glasses not connected yet'); return }
   const val = parseInt(document.getElementById('pageInput').value, 10)
   if (!val || val < 1 || val > 604) { showToast('Enter a page between 1 and 604'); return }
   window.noor.jumpToPage(val)
   updateNowReading()
-  showToast(`Jumped to page ${val}`)
+  showToast('Jumped to page ' + val)
 }
-
 function goToCurrentPosition() {
   if (!window.noor) { showToast('Glasses not connected yet'); return }
   updateNowReading()
   showToast('Already at current position')
 }
-
 function refreshDisplay() {
-  if (!window.noor) { showToast('Glasses not connected yet'); return }
-  const btn = document.getElementById('btnRefresh')
-  btn.textContent = '…'
-  btn.disabled = true
-  window.noor.refresh()
-  setTimeout(() => {
-    btn.textContent = '⟳ Refresh'
-    btn.disabled = false
-  }, 2000)
-  showToast('Display refreshed')
+  showToast('Reloading plugin…')
+  setTimeout(function() { window.location.reload() }, 500)
 }
-
 // ── Tabs ──────────────────────────────────────────────────────────────────────
 function showTab(tab) {
   currentTab = tab
@@ -716,12 +684,11 @@ function showTab(tab) {
   document.getElementById('tabJuz').classList.toggle('active', tab === 'juz')
   document.getElementById('tabPage').classList.toggle('active', tab === 'page')
 }
-
 // ── Search ────────────────────────────────────────────────────────────────────
 document.getElementById('searchInput').addEventListener('input', function() {
   const q = this.value.trim().toLowerCase()
   let visible = 0
-  document.querySelectorAll('.surah-item').forEach((el, i) => {
+  document.querySelectorAll('.surah-item').forEach(function(el, i) {
     const name = SURAHS[i][1]
     const num  = String(SURAHS[i][0])
     const show = !q || name.includes(q) || num.includes(q)
@@ -730,141 +697,167 @@ document.getElementById('searchInput').addEventListener('input', function() {
   })
   document.getElementById('surahEmpty').style.display = visible === 0 ? '' : 'none'
 })
-
 // ── Build surah list ──────────────────────────────────────────────────────────
 function buildSurahList() {
   const list = document.getElementById('surahList')
-  SURAHS.forEach(([num, name, page], idx) => {
+  SURAHS.forEach(function(s, idx) {
     const item = document.createElement('div')
     item.className = 'surah-item'
-    item.innerHTML = `
-      <div class="surah-num">${num}</div>
-      <div class="surah-name">${name}</div>
-      <div class="surah-page">p.${page}</div>
-    `
-    item.addEventListener('click', () => jumpToSurah(idx))
+    item.innerHTML =
+      '<div class="surah-num">' + s[0] + '</div>' +
+      '<div class="surah-name">' + s[1] + '</div>' +
+      '<div class="surah-page">p.' + s[2] + '</div>'
+    item.addEventListener('click', function() { jumpToSurah(idx) })
     list.appendChild(item)
   })
 }
-
 // ── Build juz grid ────────────────────────────────────────────────────────────
 function buildJuzGrid() {
   const grid = document.getElementById('juzGrid')
-  JUZ_PAGES.forEach((page, i) => {
+  JUZ_PAGES.forEach(function(page, i) {
     const item = document.createElement('div')
     item.className = 'juz-item'
-    item.innerHTML = `<div class="juz-num">${i + 1}</div><div class="juz-page">p.${page}</div>`
-    item.addEventListener('click', () => jumpToJuz(i))
+    item.innerHTML = '<div class="juz-num">' + (i + 1) + '</div><div class="juz-page">p.' + page + '</div>'
+    item.addEventListener('click', function() { jumpToJuz(i) })
     grid.appendChild(item)
   })
 }
-
 // ── Reading Mode ─────────────────────────────────────────────────────────────
-let readingModeActive  = false
-let readingModeSpeed   = 25        // seconds per tile
-let rmIntervalId       = null
-let rmCountdownId      = null
-let rmSecondsLeft      = 25
-
+let readingModeActive = false
+let readingModeSpeed  = 25
+let rmIntervalId      = null
+let rmCountdownId     = null
+let rmSecondsLeft     = 25
 function setReadingSpeed(secs) {
   readingModeSpeed = secs
   rmSecondsLeft    = secs
-  document.querySelectorAll('.btn-speed').forEach(b => {
+  document.querySelectorAll('.btn-speed').forEach(function(b) {
     b.classList.toggle('selected', parseInt(b.dataset.secs) === secs)
   })
-  // If already running, restart the timer at the new speed
-  if (readingModeActive) {
-    stopReadingMode()
-    startReadingMode()
-  }
+  if (readingModeActive) { stopReadingMode(); startReadingMode() }
 }
-
 function startReadingMode() {
   if (!window.noor) { showToast('Glasses not connected yet'); return }
   readingModeActive = true
   rmSecondsLeft     = readingModeSpeed
-
   const panel  = document.getElementById('readingModePanel')
   const btn    = document.getElementById('btnReadingMode')
   const bar    = document.getElementById('rmProgressBar')
   const cdText = document.getElementById('rmCountdown')
-
   panel.classList.add('active')
   btn.classList.add('active')
   btn.textContent = '⏹ Stop'
-
-  // Reset progress bar to full width immediately
   bar.style.transition = 'none'
   bar.style.width = '100%'
-  // Force reflow then animate down to 0 over readingModeSpeed seconds
-  requestAnimationFrame(() => {
-    requestAnimationFrame(() => {
-      bar.style.transition = `width ${readingModeSpeed}s linear`
+  requestAnimationFrame(function() {
+    requestAnimationFrame(function() {
+      bar.style.transition = 'width ' + readingModeSpeed + 's linear'
       bar.style.width = '0%'
     })
   })
-
-  cdText.textContent = `Next tile in ${rmSecondsLeft}s`
-
-  // Countdown every second
-  rmCountdownId = setInterval(() => {
+  cdText.textContent = 'Next tile in ' + rmSecondsLeft + 's'
+  rmCountdownId = setInterval(function() {
     rmSecondsLeft--
     if (rmSecondsLeft <= 0) rmSecondsLeft = readingModeSpeed
-    cdText.textContent = `Next tile in ${rmSecondsLeft}s`
+    cdText.textContent = 'Next tile in ' + rmSecondsLeft + 's'
   }, 1000)
-
-  // Advance tile every readingModeSpeed seconds
-  rmIntervalId = setInterval(() => {
+  rmIntervalId = setInterval(function() {
     if (!window.noor) { stopReadingMode(); return }
     window.noor.nextScreen()
-    // Reset progress bar
     bar.style.transition = 'none'
     bar.style.width = '100%'
-    requestAnimationFrame(() => {
-      requestAnimationFrame(() => {
-        bar.style.transition = `width ${readingModeSpeed}s linear`
+    requestAnimationFrame(function() {
+      requestAnimationFrame(function() {
+        bar.style.transition = 'width ' + readingModeSpeed + 's linear'
         bar.style.width = '0%'
       })
     })
     rmSecondsLeft = readingModeSpeed
-    cdText.textContent = `Next tile in ${rmSecondsLeft}s`
-    // Update now-reading after a short delay (let the glasses render first)
-    setTimeout(() => updateNowReading(), 800)
+    cdText.textContent = 'Next tile in ' + rmSecondsLeft + 's'
+    setTimeout(function() { updateNowReading() }, 800)
   }, readingModeSpeed * 1000)
 }
-
 function stopReadingMode() {
   readingModeActive = false
   if (rmIntervalId)  { clearInterval(rmIntervalId);  rmIntervalId  = null }
   if (rmCountdownId) { clearInterval(rmCountdownId); rmCountdownId = null }
-
-  const panel  = document.getElementById('readingModePanel')
-  const btn    = document.getElementById('btnReadingMode')
-  const bar    = document.getElementById('rmProgressBar')
-
+  const panel = document.getElementById('readingModePanel')
+  const btn   = document.getElementById('btnReadingMode')
+  const bar   = document.getElementById('rmProgressBar')
   panel.classList.remove('active')
   btn.classList.remove('active')
   btn.textContent = '▶ Start'
-
-  // Reset bar
   bar.style.transition = 'none'
   bar.style.width = '100%'
 }
-
 function toggleReadingMode() {
   if (readingModeActive) {
     stopReadingMode()
     showToast('Reading Mode stopped')
   } else {
     startReadingMode()
-    showToast(`Reading Mode started — ${readingModeSpeed}s per tile`)
+    showToast('Reading Mode started — ' + readingModeSpeed + 's per tile')
   }
 }
-
 // ── Init ──────────────────────────────────────────────────────────────────────
 buildSurahList()
 buildJuzGrid()
-pollNoor()
+
+// ── Exit confirmation ──────────────────────────────────────────────────────────────────────────────
+function showExitDialog() {
+  document.getElementById('exitModal').style.display = 'flex'
+}
+function hideExitDialog() {
+  document.getElementById('exitModal').style.display = 'none'
+}
+function cancelExit() {
+  hideExitDialog()
+  // Reload the plugin to recover from frozen glasses JS thread
+  showToast('Reloading…')
+  setTimeout(function() { window.location.reload() }, 400)
+}
+function confirmExit() {
+  hideExitDialog()
+  if (window.noor && window.noor.exit) {
+    window.noor.exit()
+  }
+  // Also try native bridge directly
+  try {
+    const b = window.EvenAppBridge && window.EvenAppBridge.getInstance ? window.EvenAppBridge.getInstance() : null
+    if (b) b.shutDownPageContainer(0)
+  } catch(_) {}
+}
+// Register exit dialog hook for main.ts (called on double-tap from glasses)
+window.__noorShowExitDialog = showExitDialog
+// Handle Android hardware back button via popstate
+// Push a dummy state so the back button triggers popstate instead of closing the WebView
+try {
+  window.history.pushState({ page: 'main' }, '', window.location.href)
+} catch(e) {}
+window.addEventListener('popstate', function(e) {
+  showExitDialog()
+  // Re-push the dummy state so the next back press also triggers popstate
+  try {
+    window.history.pushState({ page: 'main' }, '', window.location.href)
+  } catch(e2) {}
+})
+// Also handle Cordova-style backbutton event (some WebViews)
+document.addEventListener('backbutton', function(e) {
+  e.preventDefault()
+  showExitDialog()
+}, false)
 </script>
+
+<!-- Exit Confirmation Modal -->
+<div id="exitModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.75);z-index:9999;align-items:center;justify-content:center;">
+  <div style="background:#1a1a1a;border:1px solid #333;border-radius:12px;padding:28px 24px;width:80%;max-width:320px;text-align:center;">
+    <div style="font-size:1.1rem;font-weight:600;color:#fff;margin-bottom:8px;direction:ltr;">Exit Noor Quran?</div>
+    <div style="font-size:0.85rem;color:#888;margin-bottom:24px;">Your reading position will be saved.</div>
+    <div style="display:flex;gap:12px;justify-content:center;">
+      <button onclick="cancelExit()" style="flex:1;padding:10px;border-radius:8px;border:1px solid #444;background:#252525;color:#ccc;font-size:0.9rem;cursor:pointer;">No, Stay</button>
+      <button onclick="confirmExit()" style="flex:1;padding:10px;border-radius:8px;border:none;background:#c62828;color:#fff;font-size:0.9rem;font-weight:600;cursor:pointer;">Exit</button>
+    </div>
+  </div>
+</div>
 </body>
 </html>

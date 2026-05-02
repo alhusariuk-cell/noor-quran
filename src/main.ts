@@ -1,10 +1,10 @@
 /**
- * Noor – Quran Reader for Even Realities G2 Smart Glasses  (v4.0.0)
+ * Noor – Quran Reader for Even Realities G2 Smart Glasses  (v4.6.33)
  *
  * ─── Rendering approach ───────────────────────────────────────────────────────
  * Arabic text is rendered on the phone via HTML5 Canvas + Uthmanic Hafs font
- * and sent as PNG pixel data.  No pre-rendered tiles — the entire plugin is
- * ~2 MB (604 JSON page files + font) vs 63 MB for the tile-based v3.x.
+ * and sent as JPEG pixel data.  No fetch() calls — all 604 mushaf pages are
+ * bundled inline in mushaf-bundle.ts (~4 MB).
  *
  * ─── G2 display layout ────────────────────────────────────────────────────────
  *   Physical display: 576 × 288 px
@@ -30,7 +30,6 @@
  *     Single tap     → confirm → jump to highlighted surah → READING
  *     Double tap     → cancel → return to READING
  */
-
 import {
   waitForEvenAppBridge,
   CreateStartUpPageContainer,
@@ -39,9 +38,9 @@ import {
   ImageRawDataUpdate,
   OsEventTypeList,
 } from '@evenrealities/even_hub_sdk'
+import { MUSHAF_DATA } from './mushaf-bundle'
 
 // ─── G2 display constants ─────────────────────────────────────────────────────
-
 const DISPLAY_W    = 576
 const DISPLAY_H    = 288
 const IMG_W        = 400          // canvas width  (2 × QUAD_W)
@@ -62,10 +61,9 @@ const FOOTER_H         = IMG_H - TEXT_AREA_H   // 26 px
 const LINES_PER_SCREEN = 5
 
 // ─── Typography ───────────────────────────────────────────────────────────────
-
 const ARABIC_FONT_URL    = '/fonts/UthmanicHafs.woff2'
 const ARABIC_FONT_FAMILY = 'UthmanicHafs'
-const TEXT_FONT_SIZE     = 20    // px — slightly larger than v1.x thanks to taller canvas
+const TEXT_FONT_SIZE     = 20    // px
 const HEADER_FONT_SIZE   = 16    // surah-header / basmala
 
 // Text column — slightly narrower than full canvas to leave breathing room
@@ -108,10 +106,9 @@ const SURAHS: [number, string, number, number][] = [
 ]
 
 const TOTAL_PAGES      = 604
-const SELECTOR_VISIBLE = 7   // more rows now that we have 174px of text area
+const SELECTOR_VISIBLE = 7
 
 // ─── Types ────────────────────────────────────────────────────────────────────
-
 interface MushafWord { location: string; word: string }
 interface MushafLine {
   line: number
@@ -124,43 +121,63 @@ interface MushafPage { page: number; lines: MushafLine[] }
 type AppMode = 'reading' | 'selector'
 
 // ─── Bookmark ─────────────────────────────────────────────────────────────────
-
 const BOOKMARK_KEY = 'noor_bookmark'
-
 function saveBookmark(): void {
-  getBridge().then(b =>
-    b.setLocalStorage(BOOKMARK_KEY, JSON.stringify({ page: currentPage, screen: currentScreen }))
-  ).catch(() => {})
+  try {
+    localStorage.setItem(BOOKMARK_KEY, JSON.stringify({ page: currentPage, screen: currentScreen }))
+  } catch (_) {}
+  // Also try bridge storage as backup
+  getBridge().then(b => {
+    if (b.setLocalStorage) {
+      b.setLocalStorage(BOOKMARK_KEY, JSON.stringify({ page: currentPage, screen: currentScreen }))
+    }
+  }).catch(() => {})
 }
-
 async function loadBookmark(): Promise<void> {
+  // Try bridge storage first
   try {
     const bridge = await getBridge()
-    const raw = await bridge.getLocalStorage(BOOKMARK_KEY)
-    if (!raw) return
-    const { page, screen } = JSON.parse(raw)
-    if (typeof page === 'number' && page >= 1 && page <= TOTAL_PAGES) {
-      currentPage   = page
-      currentScreen = typeof screen === 'number' ? screen : 0
+    if (bridge.getLocalStorage) {
+      const raw = await bridge.getLocalStorage(BOOKMARK_KEY)
+      if (raw) {
+        const { page, screen } = JSON.parse(raw)
+        if (typeof page === 'number' && page >= 1 && page <= TOTAL_PAGES) {
+          currentPage   = page
+          currentScreen = typeof screen === 'number' ? screen : 0
+          return
+        }
+      }
+    }
+  } catch (_) {}
+  // Fallback to localStorage
+  try {
+    const raw = localStorage.getItem(BOOKMARK_KEY)
+    if (raw) {
+      const { page, screen } = JSON.parse(raw)
+      if (typeof page === 'number' && page >= 1 && page <= TOTAL_PAGES) {
+        currentPage   = page
+        currentScreen = typeof screen === 'number' ? screen : 0
+      }
     }
   } catch (_) {}
 }
 
 // ─── Render queue ─────────────────────────────────────────────────────────────
-
 let renderQueue: (() => Promise<void>)[] = []
 let renderRunning = false
 let renderGeneration = 0
+let _displayDirty = true   // true = display needs a heartbeat re-render
 
 function enqueueRender(fn: () => Promise<void>): void {
   renderGeneration++
+  _displayDirty = true
   renderQueue = [fn]
   if (!renderRunning) drainQueue()
 }
-
-async function drainQueue(): Promise<void> {
+async function drainQueue(gen: number = renderGeneration): Promise<void> {
   renderRunning = true
   while (renderQueue.length > 0) {
+    if (gen !== renderGeneration) { renderRunning = false; return }  // cancelled
     const next = renderQueue.shift()!
     try { await next() } catch (e) { console.error('[Noor] Queue error:', e) }
   }
@@ -168,7 +185,6 @@ async function drainQueue(): Promise<void> {
 }
 
 // ─── State ────────────────────────────────────────────────────────────────────
-
 let _bridge: any       = null
 let mode: AppMode      = 'reading'
 let currentPage        = 1
@@ -179,25 +195,25 @@ let fontLoaded         = false
 let lastEventTime      = 0
 let lastNavTime: Record<number, number> = {}
 let selectorConfirmedAt = 0
-let lastSwipeTime       = 0
+let _pendingResume      = false  // true after shutDownPageContainer — reset debounce on next event
+let _unsubNav: (() => void) | null = null  // unsubscribe handle for onEvenHubEvent
+// Debug counters — shown in footer on glasses
+let _dbgEventCount = 0
+let _dbgLastEvent  = -1
+let _dbgRenderCount = 0
+let _dbgResetCount = 0
 
 const EVENT_DEBOUNCE_MS   = 350
 const NAV_DEBOUNCE_MS     = 400
-const SWIPE_DEBOUNCE_MS   = 400
 const CONFIRM_COOLDOWN_MS = 600
 
-const pageCache = new Map<number, MushafPage>()
-const CACHE_SIZE = 7
-
 // ─── Bridge ───────────────────────────────────────────────────────────────────
-
 async function getBridge(): Promise<any> {
   if (!_bridge) _bridge = await waitForEvenAppBridge()
   return _bridge
 }
 
 // ─── Font ─────────────────────────────────────────────────────────────────────
-
 async function ensureFontLoaded(): Promise<void> {
   if (fontLoaded) return
   try {
@@ -209,25 +225,14 @@ async function ensureFontLoaded(): Promise<void> {
   fontLoaded = true
 }
 
-// ─── Data ─────────────────────────────────────────────────────────────────────
-
-async function fetchPage(n: number): Promise<MushafPage> {
-  if (pageCache.has(n)) return pageCache.get(n)!
-  const resp = await fetch(`/mushaf/page-${String(n).padStart(3, '0')}.json`)
-  if (!resp.ok) throw new Error(`HTTP ${resp.status} for page ${n}`)
-  const data: MushafPage = await resp.json()
-  if (pageCache.size >= CACHE_SIZE) pageCache.delete(pageCache.keys().next().value!)
-  pageCache.set(n, data)
-  return data
-}
-
-function prefetchAdjacentPages(n: number): void {
-  if (n + 1 <= TOTAL_PAGES && !pageCache.has(n + 1)) fetchPage(n + 1).catch(() => {})
-  if (n - 1 >= 1           && !pageCache.has(n - 1)) fetchPage(n - 1).catch(() => {})
+// ─── Data (synchronous — no fetch()) ─────────────────────────────────────────
+function getPage(n: number): MushafPage {
+  const data = (MUSHAF_DATA as Record<number, MushafPage>)[n]
+  if (data) return data
+  return { page: n, lines: [] }
 }
 
 // ─── Canvas helpers ───────────────────────────────────────────────────────────
-
 function makeCanvas(w: number, h: number): [HTMLCanvasElement, CanvasRenderingContext2D] {
   const c = document.createElement('canvas')
   c.width = w; c.height = h
@@ -237,20 +242,39 @@ function makeCanvas(w: number, h: number): [HTMLCanvasElement, CanvasRenderingCo
   return [c, ctx]
 }
 
-function canvasToPngBytes(canvas: HTMLCanvasElement): Uint8Array {
+
+/**
+ * Convert a canvas to a JPEG number[] for ImageRawDataUpdate.
+ * Uses fetch(dataURL) to get raw bytes without a per-byte atob() loop.
+ * Returns number[] (not Uint8Array) so the host Dart/Flutter bridge
+ * receives a properly-aligned List<int> — avoids LVGL software fallback.
+ * Quality 0.75: ~25% smaller payload vs 0.88 — reduces D-Cache pressure on G2.
+ */
+/**
+ * Encode canvas to PNG (lossless) → number[].
+ * PNG eliminates JPEG compression artefacts (mosquito noise) around Arabic text.
+ * Returns number[] so the host Dart/Flutter bridge receives a properly-aligned
+ * List<int> — avoids LVGL software fallback (EvenHub store requirement).
+ * Arabic text on white background compresses very efficiently with PNG DEFLATE.
+ */
+function canvasToPngNumberArray(canvas: HTMLCanvasElement): number[] {
   const b64 = canvas.toDataURL('image/png').split(',')[1]
   const bin = atob(b64)
-  const bytes = new Uint8Array(bin.length)
+  const bytes = new Array<number>(bin.length)
   for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i)
   return bytes
 }
 
-/** Slice the 400×200 canvas into 4 quadrant PNGs (TL, TR, BL, BR) */
-function sliceQuadrants(canvas: HTMLCanvasElement): [Uint8Array, Uint8Array, Uint8Array, Uint8Array] {
-  const quad = (sx: number, sy: number): Uint8Array => {
+/** Slice the 400×200 canvas into 4 quadrant JPEG number[] arrays (TL, TR, BL, BR).
+ * Sequential (not parallel) to avoid race conditions between async fetch() calls
+ * sharing the same canvas context. Canvas width is reassigned to fully reset
+ * all context state between uses (clearRect alone does not reset transforms etc). */
+/** Slice the 400×200 canvas into 4 quadrant PNG number[] arrays (TL, TR, BL, BR) */
+function sliceQuadrants(canvas: HTMLCanvasElement): [number[], number[], number[], number[]] {
+  const quad = (sx: number, sy: number): number[] => {
     const [t, tc] = makeCanvas(QUAD_W, QUAD_H)
     tc.drawImage(canvas, sx, sy, QUAD_W, QUAD_H, 0, 0, QUAD_W, QUAD_H)
-    return canvasToPngBytes(t)
+    return canvasToPngNumberArray(t)
   }
   return [
     quad(0,      0),
@@ -261,10 +285,9 @@ function sliceQuadrants(canvas: HTMLCanvasElement): [Uint8Array, Uint8Array, Uin
 }
 
 // ─── Arabic text helpers ──────────────────────────────────────────────────────
-
 /**
  * Strip Uthmanic orthographic marks that render as distracting filled circles
- * on the glasses display.  Waqf instruction marks are kept.
+ * on the glasses display.
  */
 function stripWaqfMarkers(text: string): string {
   return text.replace(/[\u06DF-\u06E8\u06EA-\u06ED\u0600-\u0605]/g, '')
@@ -284,12 +307,9 @@ function surahNameForPage(page: number): string {
 }
 
 // ─── Reading mode rendering ───────────────────────────────────────────────────
-
 /**
  * Render 5 lines of Quranic text onto a 400×200 canvas with a footer bar,
  * then slice into 4 quadrant tiles.
- *
- * Text is justified within TEXT_COL_W using RTL word-gap distribution.
  */
 function renderLinesToQuads(
   lines: MushafLine[],
@@ -297,37 +317,29 @@ function renderLinesToQuads(
   totalScreens: number,
   pageNum: number,
   surahName: string
-): [Uint8Array, Uint8Array, Uint8Array, Uint8Array] {
+): [number[], number[], number[], number[]] {
   const lineH = Math.floor(TEXT_AREA_H / Math.max(lines.length, 1))
   const [canvas, ctx] = makeCanvas(IMG_W, IMG_H)
-
   ctx.fillStyle = '#fff'
   ctx.direction = 'rtl'
   ctx.textBaseline = 'middle'
 
   lines.forEach((line, i) => {
     const y = i * lineH + lineH / 2
-
     if (line.type === 'surah-header') {
       // Decorative border lines
       ctx.strokeStyle = '#666'; ctx.lineWidth = 1
       ctx.beginPath(); ctx.moveTo(COL_LEFT, i * lineH + 3); ctx.lineTo(COL_RIGHT, i * lineH + 3); ctx.stroke()
       ctx.beginPath(); ctx.moveTo(COL_LEFT, (i + 1) * lineH - 3); ctx.lineTo(COL_RIGHT, (i + 1) * lineH - 3); ctx.stroke()
-
       ctx.font = `${HEADER_FONT_SIZE}px '${ARABIC_FONT_FAMILY}', serif`
       ctx.textAlign = 'center'
-      // Use the raw header text from the mushaf data — it already contains
-      // the correct سورة name in the correct Uthmanic spelling.
-      // Strip any leading سورة prefix so we can re-add it consistently.
       const rawText = (line.text ?? '').trim()
       const headerName = rawText.startsWith('سورة ') ? rawText : `سورة ${rawText}`
       ctx.fillText(headerName, IMG_W / 2, y)
-
     } else if (line.type === 'basmala') {
       ctx.font = `${HEADER_FONT_SIZE}px '${ARABIC_FONT_FAMILY}', serif`
       ctx.textAlign = 'center'
       ctx.fillText('بِسْمِ ٱللَّهِ ٱلرَّحْمَـٰنِ ٱلرَّحِيمِ', IMG_W / 2, y)
-
     } else {
       const text = stripWaqfMarkers(
         line.words && line.words.length > 0
@@ -364,19 +376,15 @@ function renderLinesToQuads(
   // ── Footer bar ────────────────────────────────────────────────────────────────
   ctx.strokeStyle = '#444'; ctx.lineWidth = 1
   ctx.beginPath(); ctx.moveTo(COL_LEFT, TEXT_AREA_H); ctx.lineTo(COL_RIGHT, TEXT_AREA_H); ctx.stroke()
-
   const footerY = TEXT_AREA_H + FOOTER_H / 2
   ctx.textBaseline = 'middle'
-
   // Left: page number
   ctx.fillStyle = '#888'; ctx.font = '11px monospace'
   ctx.textAlign = 'left'; ctx.direction = 'ltr'
   ctx.fillText(`ص${toArabicNumerals(pageNum)}`, COL_LEFT, footerY)
-
   // Centre: screen counter
   ctx.textAlign = 'center'
   ctx.fillText(`${toArabicNumerals(screenIdx + 1)}/${toArabicNumerals(totalScreens)}`, IMG_W / 2, footerY)
-
   // Right: surah name
   if (surahName) {
     ctx.fillStyle = '#888'
@@ -384,13 +392,11 @@ function renderLinesToQuads(
     ctx.textAlign = 'right'; ctx.direction = 'rtl'
     ctx.fillText(surahName, COL_RIGHT, footerY)
   }
-
   return sliceQuadrants(canvas)
 }
 
 // ─── Selector mode rendering ──────────────────────────────────────────────────
-
-function renderSelectorQuads(): [Uint8Array, Uint8Array, Uint8Array, Uint8Array] {
+function renderSelectorQuads(): [number[], number[], number[], number[]] {
   const [canvas, ctx] = makeCanvas(IMG_W, IMG_H)
   const rowH = Math.floor(TEXT_AREA_H / SELECTOR_VISIBLE)
   const half  = Math.floor(SELECTOR_VISIBLE / 2)
@@ -398,60 +404,64 @@ function renderSelectorQuads(): [Uint8Array, Uint8Array, Uint8Array, Uint8Array]
   const visible = SURAHS.slice(start, start + SELECTOR_VISIBLE)
 
   visible.forEach(([num, name], i) => {
-    const isActive = start + i === selectorIndex
-    const y    = i * rowH
-    const midY = y + rowH / 2
-
-    if (isActive) {
-      ctx.fillStyle = '#222'
+    const isSelected = (start + i) === selectorIndex
+    const y = i * rowH
+    if (isSelected) {
+      ctx.fillStyle = '#fff'
       ctx.fillRect(COL_LEFT, y, TEXT_COL_W, rowH)
     }
-
-    // Surah number
-    ctx.fillStyle = isActive ? '#fff' : '#666'
-    ctx.font = `${isActive ? 13 : 11}px monospace`
-    ctx.textAlign = 'left'; ctx.textBaseline = 'middle'; ctx.direction = 'ltr'
-    ctx.fillText(String(num).padStart(3, ' '), COL_LEFT + 4, midY)
-
-    // Surah name
-    ctx.direction = 'rtl'; ctx.textAlign = 'right'
-    ctx.font = `${isActive ? 19 : 15}px '${ARABIC_FONT_FAMILY}', serif`
-    ctx.fillStyle = isActive ? '#fff' : '#888'
-    ctx.fillText(name, COL_RIGHT - 4, midY)
+    ctx.fillStyle = isSelected ? '#000' : '#fff'
+    ctx.font = `14px '${ARABIC_FONT_FAMILY}', serif`
+    ctx.textAlign = 'right'
+    ctx.textBaseline = 'middle'
+    ctx.direction = 'rtl'
+    ctx.fillText(name, COL_RIGHT, y + rowH / 2)
+    // Surah number on the left
+    ctx.fillStyle = isSelected ? '#000' : '#888'
+    ctx.font = '11px monospace'
+    ctx.textAlign = 'left'
+    ctx.direction = 'ltr'
+    ctx.fillText(String(num), COL_LEFT, y + rowH / 2)
   })
 
   // Footer
   ctx.strokeStyle = '#444'; ctx.lineWidth = 1
   ctx.beginPath(); ctx.moveTo(COL_LEFT, TEXT_AREA_H); ctx.lineTo(COL_RIGHT, TEXT_AREA_H); ctx.stroke()
   const footerY = TEXT_AREA_H + FOOTER_H / 2
-  ctx.fillStyle = '#555'; ctx.font = '10px monospace'
-  ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.direction = 'ltr'
-  ctx.fillText('swipe: scroll   2× tap: select', IMG_W / 2, footerY)
+  ctx.fillStyle = '#888'; ctx.font = '11px monospace'
+  ctx.textAlign = 'center'; ctx.direction = 'ltr'
+  ctx.textBaseline = 'middle'
+  ctx.fillText('tap to select', IMG_W / 2, footerY)
 
   return sliceQuadrants(canvas)
 }
 
 // ─── SDK helpers ──────────────────────────────────────────────────────────────
-
 const delay = (ms: number) => new Promise<void>(r => setTimeout(r, ms))
 
-async function sendImage(id: number, name: string, data: Uint8Array): Promise<void> {
+async function sendImage(id: number, name: string, data: number[]): Promise<void> {
   const bridge = await getBridge()
-  await bridge.updateImageRawData(new ImageRawDataUpdate({ containerID: id, containerName: name, imageData: data }))
-}
-
-async function sendQuads(tiles: [Uint8Array, Uint8Array, Uint8Array, Uint8Array]): Promise<void> {
-  const [tl, tr, bl, br] = tiles
-  await Promise.all([
-    sendImage(1, 'quad_tl', tl),
-    sendImage(2, 'quad_tr', tr),
-    sendImage(3, 'quad_bl', bl),
-    sendImage(4, 'quad_br', br),
+  // Timeout guard: bridge.updateImageRawData can hang indefinitely when
+  // the G2 is showing a popup overlay. If it doesn't resolve in 2s,
+  // treat it as a no-op so drainQueue() can continue and renderRunning
+  // is eventually reset to false.
+  await Promise.race([
+    bridge.updateImageRawData(new ImageRawDataUpdate({ containerID: id, containerName: name, imageData: data })),
+    new Promise<void>(resolve => setTimeout(resolve, 400))
   ])
 }
 
-// ─── Container setup ──────────────────────────────────────────────────────────
+async function sendQuads(tiles: [number[], number[], number[], number[]]): Promise<void> {
+  const [tl, tr, bl, br] = tiles
+  // Sequential sends — avoid concurrent sends per SDK guidance
+  await sendImage(1, 'quad_tl', tl)
+  await sendImage(2, 'quad_tr', tr)
+  await sendImage(3, 'quad_bl', bl)
+  await sendImage(4, 'quad_br', br)
+  _displayDirty = false   // display is now up to date
+}
 
+// ─── Container setup ──────────────────────────────────────────────────────────
 async function setupContainers(): Promise<void> {
   const bridge = await getBridge()
   await bridge.createStartUpPageContainer(new CreateStartUpPageContainer({
@@ -479,19 +489,13 @@ function resumeRender(): void {
 }
 
 // ─── Reading mode ─────────────────────────────────────────────────────────────
-
 function screensForPage(lines: MushafLine[]): number {
   return Math.ceil(lines.length / LINES_PER_SCREEN)
 }
 
 /**
  * Find which screen (0-based) on a page contains the surah-header for the
- * given surah number.  The header line carries a `surah` field (e.g. "082");
- * we match on that to avoid the case where two surahs share a page and the
- * first header found belongs to the *following* surah (e.g. page 587 has
- * only المطففين's header, not الانفطار's).
- *
- * Falls back to screen 0 when no matching header is found.
+ * given surah number.
  */
 function screenForSurahHeader(lines: MushafLine[], surahNum: number): number {
   const paddedNum = String(surahNum).padStart(3, '0')
@@ -508,29 +512,23 @@ function screenForSurahHeader(lines: MushafLine[], surahNum: number): number {
     )
     if (idx >= 0) return Math.floor(idx / LINES_PER_SCREEN)
   }
-  // No matching header found — surah starts before any header on this page
   return 0
 }
 
 async function _doRenderReadingView(): Promise<void> {
+  _dbgRenderCount++
   const gen = renderGeneration
   await ensureFontLoaded()
-  const pageData = await fetchPage(currentPage)
+  if (gen !== renderGeneration) return
+  const pageData = getPage(currentPage)
   const lines    = pageData.lines
   const start    = currentScreen * LINES_PER_SCREEN
   const slice    = [...lines.slice(start, start + LINES_PER_SCREEN)]
   while (slice.length < LINES_PER_SCREEN) slice.push({ line: -1, type: 'text', text: '' })
-
-  // Derive the surah name for the footer.
-  // Always use the SURAHS array (no سورة prefix, consistent) rather than raw
-  // header text from the mushaf data (which includes سورة and may belong to
-  // the next surah on shared pages).
   const surahName = surahNameForPage(currentPage)
-
   const quads = renderLinesToQuads(slice, currentScreen, screensForPage(lines), currentPage, surahName)
   if (gen !== renderGeneration) return
   await sendQuads(quads)
-  prefetchAdjacentPages(currentPage)
 }
 
 function renderReadingView(): void {
@@ -541,10 +539,10 @@ function renderReadingView(): void {
 }
 
 // ─── Selector mode ────────────────────────────────────────────────────────────
-
 async function _doRenderSelectorView(): Promise<void> {
   const gen = renderGeneration
   await ensureFontLoaded()
+  if (gen !== renderGeneration) return
   const quads = renderSelectorQuads()
   if (gen !== renderGeneration) return
   await sendQuads(quads)
@@ -573,21 +571,15 @@ function confirmSelector(): void {
   currentPage     = page
   currentSurahNum = surahNum
   selectorConfirmedAt = Date.now()
-  // Find the correct screen asynchronously, then render
-  fetchPage(page).then(pageData => {
-    currentScreen = screenForSurahHeader(pageData.lines, surahNum)
-    saveBookmark()
-    renderReadingView()
-  }).catch(() => {
-    currentScreen = 0
-    saveBookmark()
-    renderReadingView()
-  })
+  // Synchronous lookup — no fetch needed
+  const pageData = getPage(page)
+  currentScreen = screenForSurahHeader(pageData.lines, surahNum)
+  saveBookmark()
+  renderReadingView()
 }
 
 // ─── Navigation ───────────────────────────────────────────────────────────────
-
-async function goNext(): Promise<void> {
+function goNext(): void {
   const now = Date.now()
   if (now - (lastNavTime[2] ?? 0) < NAV_DEBOUNCE_MS) return
   lastNavTime[2] = now
@@ -595,7 +587,7 @@ async function goNext(): Promise<void> {
     if (selectorIndex < SURAHS.length - 1) selectorIndex++
     renderSelectorView(); return
   }
-  const pageData = await fetchPage(currentPage)
+  const pageData = getPage(currentPage)
   const maxScreen = screensForPage(pageData.lines) - 1
   if (currentScreen < maxScreen) {
     currentScreen++
@@ -606,7 +598,7 @@ async function goNext(): Promise<void> {
   renderReadingView()
 }
 
-async function goPrev(): Promise<void> {
+function goPrev(): void {
   const now = Date.now()
   if (now - (lastNavTime[1] ?? 0) < NAV_DEBOUNCE_MS) return
   lastNavTime[1] = now
@@ -618,7 +610,7 @@ async function goPrev(): Promise<void> {
     currentScreen--
   } else if (currentPage > 1) {
     currentPage--
-    const pageData = await fetchPage(currentPage)
+    const pageData = getPage(currentPage)
     currentScreen = screensForPage(pageData.lines) - 1
   } else return
   saveBookmark()
@@ -626,11 +618,11 @@ async function goPrev(): Promise<void> {
 }
 
 // ─── Event handling ───────────────────────────────────────────────────────────
-
 function resolveEventType(event: any): number | null {
   const candidates = [
     event?.jsonData?.eventType,
     event?.textEvent?.eventType,
+    event?.sysEvent?.eventType,   // G2 sends events via sysEvent
     event?.eventType,
     event?.data?.eventType,
   ]
@@ -640,35 +632,52 @@ function resolveEventType(event: any): number | null {
     if (resolved !== null && resolved !== undefined) return resolved as number
     if (typeof raw === 'number') return raw
   }
+  // G2 single tap sends sysEvent/jsonData with eventSource but NO eventType field.
+  // Treat this as CLICK_EVENT (0).
+  if (
+    (event?.sysEvent?.eventSource !== undefined || event?.jsonData?.eventSource !== undefined) &&
+    event?.sysEvent?.eventType === undefined &&
+    event?.jsonData?.eventType === undefined
+  ) {
+    return 0
+  }
   return null
 }
 
 async function setupNavigation(): Promise<void> {
   const bridge = await getBridge()
-  bridge.onEvenHubEvent((event: any) => {
+  // Unsubscribe any previous listener before registering a new one
+  if (_unsubNav) { try { _unsubNav() } catch (_) {} }
+  _unsubNav = bridge.onEvenHubEvent((event: any) => {
     const eventType = resolveEventType(event)
     console.log('[Noor] event:', JSON.stringify(event), '→ type:', eventType, '| mode:', mode)
     if (eventType === null) return
-
+    _dbgEventCount++
+    _dbgLastEvent = eventType
+    // If the user dismissed the exit popup and returned to the plugin,
+    // reset all debounce timers on the first incoming event so swipes/taps
+    // work immediately. The G2 may not send event type 4 on popup dismiss.
+    if (_pendingResume) {
+      _pendingResume = false
+      lastEventTime  = 0
+      lastNavTime    = {}
+      _displayDirty  = true
+      console.log('[Noor] Resume from popup — debounce timers reset')
+      setTimeout(() => { resumeRender(); setTimeout(() => resumeRender(), 900) }, 400)
+    }
     const now = Date.now()
-    const isTap = eventType === 0 || eventType === 3
     const inSelector = mode === 'selector'
-    if (isTap && !inSelector && (now - lastEventTime) < EVENT_DEBOUNCE_MS) return
-    if (isTap) lastEventTime = now
-
+    // Debounce only single taps (type 0) in reading mode.
+    // Do NOT include double-tap (type 3) in the debounce — this was causing
+    // the selector to fail: a double-tap set lastEventTime, then the next
+    // single tap arrived within 350ms and was blocked by the debounce guard.
+    if (eventType === 0 && !inSelector && (now - lastEventTime) < EVENT_DEBOUNCE_MS) return
+    if (eventType === 0) lastEventTime = now
     switch (eventType) {
-      case 1: {
-        const swipeNow = Date.now()
-        if (swipeNow - lastSwipeTime < SWIPE_DEBOUNCE_MS) break
-        lastSwipeTime = swipeNow
+      case 1:
         goPrev(); break
-      }
-      case 2: {
-        const swipeNow = Date.now()
-        if (swipeNow - lastSwipeTime < SWIPE_DEBOUNCE_MS) break
-        lastSwipeTime = swipeNow
+      case 2:
         goNext(); break
-      }
       case 0:
         // Single tap → enter selector (reading mode) / confirm selection (selector mode)
         if (mode === 'reading') {
@@ -683,11 +692,20 @@ async function setupNavigation(): Promise<void> {
           mode = 'reading'
           renderReadingView()
         } else {
-          bridge.shutDownPageContainer(0)
+          // Show exit dialog on phone UI simultaneously with glasses popup.
+          // If user taps No on phone → page reloads (recovers frozen JS thread).
+          // If user taps Yes on phone → shutDownPageContainer(0) exits cleanly.
+          // The glasses popup satisfies store compliance requirement.
+          ;(window as any).__noorShowExitDialog?.()
+          bridge.shutDownPageContainer(1)
         }
         break
       case 4:
+        // Foreground resume — user returned from background or dismissed popup.
         console.log('[Noor] Foreground resume — re-rendering')
+        lastEventTime = 0
+        lastNavTime   = {}
+        _displayDirty = true
         setTimeout(() => {
           resumeRender()
           setTimeout(() => resumeRender(), 900)
@@ -699,13 +717,43 @@ async function setupNavigation(): Promise<void> {
   })
 }
 
-// ─── Entry point ──────────────────────────────────────────────────────────────
-
+// ─── Hard reset ──────────────────────────────────────────────────────────────
+function hardReset(): void {
+  _dbgResetCount++
+  console.log('[Noor] Hard reset: bumping generation and scheduling re-render')
+  // Bump generation synchronously — the stuck drainQueue will see this
+  // on its next iteration (after its current sendImage timeout fires)
+  // and exit cleanly.
+  renderGeneration++
+  const myGen = renderGeneration
+  renderQueue = []
+  renderRunning = false
+  lastEventTime = 0
+  lastNavTime   = {}
+  _displayDirty = true
+  _pendingResume = false
+  // Schedule the re-render after 2s (worst case: 4 x 400ms sendImage timeouts)
+  // Using plain setTimeout — no await — so the stuck coroutine cannot block this
+  setTimeout(() => {
+    if (myGen !== renderGeneration) return  // another reset happened
+    renderQueue = []
+    renderRunning = false
+    renderGeneration++
+    // Directly enqueue and start drainQueue — bypass enqueueRender's renderRunning check
+    const fn = mode === 'reading'
+      ? async () => { renderReadingView() }
+      : async () => { renderSelectorView() }
+    renderQueue = [fn]
+    drainQueue()
+  }, 2000)
+}
+// ─── Entry point ───────────────────────────────────────────────────────────────
 async function main(): Promise<void> {
   try {
-    console.log('[Noor] Starting v4.0.0 (text rendering, G2)…')
+    console.log('[Noor] Starting v4.6.35 (full rendering, MUSHAF_DATA bundle, G2)…')
     const bridge = await getBridge()
 
+    // Wait for launch source or timeout
     await new Promise<void>((resolve) => {
       const unsub = bridge.onLaunchSource(async () => {
         unsub()
@@ -716,10 +764,21 @@ async function main(): Promise<void> {
     })
 
     await setupContainers()
+
     // Extra settle time before first render to avoid freeze on cold start
     await delay(300)
+
+    // Three initial renders: T+0, T+0.9s, T+2s (matches Noor Azkar pattern)
     renderReadingView()
+    setTimeout(() => renderReadingView(), 900)
+    setTimeout(() => renderReadingView(), 2000)
+
     await setupNavigation()
+
+    // 8-second heartbeat — keeps the display alive (matches Noor Azkar)
+    setInterval(() => {
+      if (_displayDirty) resumeRender()
+    }, 8000)
 
     // Web Worker wake-up detection
     try {
@@ -750,6 +809,7 @@ async function main(): Promise<void> {
 main()
 
 // ─── Developer API ────────────────────────────────────────────────────────────
+;(window as any).__noorShowExitDialog = null  // set by phone UI
 ;(window as any).noor = {
   jumpToPage: (n: number) => {
     currentPage = Math.max(1, Math.min(TOTAL_PAGES, n))
@@ -759,23 +819,58 @@ main()
     const s = SURAHS.find(([num]) => num === n)
     if (!s) return
     currentPage = s[2]; currentSurahNum = n; mode = 'reading'
-    fetchPage(s[2]).then(pageData => {
-      currentScreen = screenForSurahHeader(pageData.lines, n)
-      saveBookmark(); renderReadingView()
-    }).catch(() => {
-      currentScreen = 0; saveBookmark(); renderReadingView()
-    })
+    const pageData = getPage(s[2])
+    currentScreen = screenForSurahHeader(pageData.lines, n)
+    saveBookmark(); renderReadingView()
   },
   goNext, goPrev,
   nextScreen: () => goNext(),
-  refresh: () => resumeRender(),
+  refresh: () => {
+    // Inline hardReset — prevents Vite tree-shaking
+    _dbgResetCount++
+    renderGeneration++
+    const myGen = renderGeneration
+    renderQueue = []
+    renderRunning = false
+    lastEventTime = 0
+    lastNavTime   = {}
+    _displayDirty = true
+    _pendingResume = false
+    setTimeout(() => {
+      if (myGen !== renderGeneration) return
+      renderQueue = []
+      renderRunning = false
+      renderGeneration++
+      resumeRender()
+      if (!renderRunning) drainQueue()
+    }, 2000)
+  },
   get page()         { return currentPage },
   get screen()        { return currentScreen },
   get mode()          { return mode },
   get surahNum()      { return currentSurahNum },
   get totalScreens()  {
-    // Return cached page line count if available, else estimate 3
-    const cached = pageCache.get(currentPage)
-    return cached ? Math.ceil(cached.lines.length / LINES_PER_SCREEN) : 3
+    const pageData = getPage(currentPage)
+    return screensForPage(pageData.lines)
+  },
+  exit: () => getBridge().then(b => b.shutDownPageContainer(0)),
+  reregister: () => {
+    _dbgResetCount++
+    renderGeneration++
+    const myGen2 = renderGeneration
+    renderQueue = []
+    renderRunning = false
+    lastEventTime = 0
+    lastNavTime   = {}
+    _displayDirty = true
+    _pendingResume = false
+    setTimeout(() => {
+      if (myGen2 !== renderGeneration) return
+      renderQueue = []
+      renderRunning = false
+      renderGeneration++
+      resumeRender()
+      if (!renderRunning) drainQueue()
+    }, 2000)
   },
 }
