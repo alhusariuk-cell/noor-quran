@@ -79,6 +79,7 @@ const G = { sepY: 253, footY: 272.5, size: 16, min: 12, maxW: 372, color: '#8a8a
           ['lesson-s4', () => { for (let i = 0; i < 4; i++) window.noor.memo.advance() }],
           ['lesson-s7', () => { for (let i = 0; i < 3; i++) window.noor.memo.advance() }],
           ['recall', () => { for (let i = 0; i < 6; i++) window.noor.memo.advance() }],
+          ['done', () => { for (let g = 0; g < 500 && window.noor.memo.state.phase !== 'done'; g++) window.noor.memo.advance() }],
         ]
         for (const [name, fn] of states) {
           await app.render(fn)
@@ -112,7 +113,8 @@ async function checkScreen(app, { p, k, name, reading, expected, st }) {
   const shown = await app.eval(() => window.noor.memo.preview())
   assert.deepEqual(shown, expected, `${where}: preview line differs from the expected next text line`)
   const png = (await app.composite()).toString('base64')
-  const r = await app.eval(async ({ png, reading, text, G, stage0 }) => {
+  const ptoks = (await app.eval(() => window.noor.memo.previewLayout())) || []
+  const r = await app.eval(async ({ png, reading, text, G, stage0, ptoks }) => {
     const load = async s => {
       const img = await createImageBitmap(new Blob([Uint8Array.from(atob(s), c => c.charCodeAt(0))], { type: 'image/png' }))
       const c = document.createElement('canvas'); c.width = 576; c.height = 288; const x = c.getContext('2d'); x.drawImage(img, 0, 0)
@@ -133,8 +135,25 @@ async function checkScreen(app, { p, k, name, reading, expected, st }) {
     }
     const E = x.getImageData(0, 0, 576, 288).data
     let previewDiff = 0
-    for (let y = G.sepY + 1; y < 288; y++) for (let xx = G.previewZone[0] - 2; xx <= G.previewZone[1] + 2; xx++) {
-      const i = (y * 576 + xx) * 4; if (A[i] !== E[i]) previewDiff++
+    const anyHidden = ptoks.some(t => t.hidden)
+    if (!anyHidden) {
+      // Everything visible: the preview zone must equal the exact line drawn alone
+      for (let y = G.sepY + 1; y < 288; y++) for (let xx = G.previewZone[0] - 2; xx <= G.previewZone[1] + 2; xx++) {
+        const i = (y * 576 + xx) * 4; if (A[i] !== E[i]) previewDiff++
+      }
+    } else {
+      // Visible words match the exact line inside their own boxes; hidden words show only a placeholder
+      out.hiddenInk = []
+      for (const t of ptoks) {
+        const x0 = Math.ceil(t.x + 1), x1 = Math.floor(t.x + t.w - 1)
+        let bright = 0, d = 0
+        for (let y = G.sepY + 1; y < 288; y++) for (let xx = x0; xx <= x1; xx++) {
+          const i = (y * 576 + xx) * 4
+          if (t.hidden) { if (A[i] > 110) bright++ }      // text #8a8a8a (138) vs placeholder #666 (102)
+          else if (A[i] !== E[i]) d++
+        }
+        if (t.hidden) out.hiddenInk.push(bright); else previewDiff += d
+      }
     }
     out.previewDiff = previewDiff
     // Footer ink bounds by region (rows 254–287), excluding the zone rules
@@ -143,9 +162,10 @@ async function checkScreen(app, { p, k, name, reading, expected, st }) {
       return b < 0 ? null : [l, t, rr, b] }
     out.left = box(0, 93); out.gapL = box(94, 101); out.preview = box(102, 474); out.gapR = box(475, 482); out.right = box(483, 575)
     return out
-  }, { png, reading, text: expected && expected.text, G, stage0: name === 'lesson-s0' })
+  }, { png, reading, text: expected && expected.text, G, stage0: name === 'lesson-s0', ptoks })
   if (name === 'lesson-s0') assert.equal(r.lineDiff, 0, `${where}: Quran rows 0–252 differ from Reading`)
-  assert.equal(r.previewDiff, 0, `${where}: preview pixels differ from the expected line (${r.previewDiff})`)
+  assert.equal(r.previewDiff, 0, `${where}: visible preview pixels differ from the expected line (${r.previewDiff})`)
+  if (r.hiddenInk) assert.ok(r.hiddenInk.every(n => n === 0), `${where}: hidden preview word still drawn ${r.hiddenInk}`)
   if (!expected) assert.equal(r.preview, null, `${where}: preview drawn where none expected`)
   else assert.ok(r.preview, `${where}: preview missing`)
   assert.equal(r.gapL, null, `${where}: ink in left gutter ${r.gapL}`)

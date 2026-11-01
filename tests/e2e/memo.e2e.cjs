@@ -124,7 +124,8 @@ async function footerInkColumns(app, png) {
         // memorisation footer separator is at y = 253, so rows 253–287 differ by design.
         const bad = d.rows.filter(y => y < 253)
         assert.equal(bad.length, 0, `page ${p} screen ${k + 1}: text area differs on rows ${bad.slice(0, 5)}`)
-        await app.render(() => window.noor.memo.back())              // stage 0 → back → Reading
+        // M1.2-B: back from stage 0 of a later section goes to the previous section's DONE, so leave via End
+        await app.render(() => window.noor.endActivity())
         assert.equal(await app.eval(() => window.noor.mode), 'reading')
         assert.equal(await app.eval(() => window.noor.screen), k, `page ${p}: exit changed screen`)
         const again = await app.composite()
@@ -136,9 +137,9 @@ async function footerInkColumns(app, png) {
   })
 
   // ── 3. Real SDK events ──────────────────────────────────────────────────────
-  if (run(3)) await check('SDK event routing: selector entry, stages, sections, recall, exit, double press', async () => {
+  if (run(3)) await check('SDK event routing (structured دروس): selector entry, stages, tap ignored, recall, back to Reading, double press', async () => {
     const st = () => app.eval(() => window.noor.memo.state)
-    const ev = async (t, src = 1) => { await app.event(t, src); await wait(430); await app.settle(40) }
+    const ev = async (t, src = 1, gap = 430) => { await app.event(t, src); await wait(gap); await app.settle(40) }
     for (const [p, sections] of [[1, 2], [586, 3], [604, 3]]) {
       await app.render(p => window.noor.jumpToPage(p), p); await wait(700)
       await ev(0)                                                     // tap → selector
@@ -146,18 +147,20 @@ async function footerInkColumns(app, png) {
       await ev(1)                                                     // SCROLL_TOP → memo row
       await ev(0)                                                     // confirm
       assert.equal(await app.eval(() => window.noor.mode), 'memo', `page ${p}: memo not started`)
-      let s = await st(); assert.equal(s.stage, 0); assert.equal(s.sectionCount, sections)
+      let s = await st(); assert.equal(s.activity, 'lesson'); assert.equal(s.k, 0); assert.equal(s.stage, 0); assert.equal(s.sectionCount, sections)
       await ev(2); await ev(2, 2)                                     // SCROLL_BOTTOM ×2 (temple, ring source)
       s = await st(); assert.equal(s.stage, 2)
       await ev(1); s = await st(); assert.equal(s.stage, 1)          // SCROLL_TOP
-      for (let i = 0; i < sections; i++) { await ev(0) }              // taps wrap back to the first section
-      s = await st(); assert.equal(s.section, 0); assert.equal(s.stage, 1)
-      for (let i = 0; i < 7; i++) await ev(2)                         // → stage 7 → recall
-      s = await st(); assert.equal(s.phase, 'recall'); assert.equal(s.recallIndex, -1)
-      await ev(2); await ev(2); s = await st(); assert.equal(s.recallIndex, 1)
-      await ev(1); s = await st(); assert.equal(s.recallIndex, 0)
-      await ev(1); await ev(1); s = await st(); assert.equal(s.phase, 'memo'); assert.equal(s.stage, 7)
-      for (let i = 0; i < 8; i++) await ev(1)                         // 7 → 0 → Reading
+      const sends = await app.eval(() => window.__sends)
+      for (let i = 0; i < 3; i++) await ev(0, 1, 700)                 // taps do nothing in the structured flow
+      s = await st(); assert.equal(s.k, 0); assert.equal(s.section, 0); assert.equal(s.stage, 1)
+      assert.equal(await app.eval(() => window.__sends), sends, 'tap caused a re-render')
+      for (let i = 0; i < 7; i++) await ev(2, 1, 900)                 // → stage 7 → recall (boundary cooldown)
+      s = await st(); assert.equal(s.phase, 'recall'); assert.equal(s.index, -1)
+      await ev(2); await ev(2); s = await st(); assert.equal(s.index, 1)
+      await ev(1); s = await st(); assert.equal(s.index, 0)
+      await ev(1); await ev(1, 1, 900); s = await st(); assert.equal(s.phase, 'memo'); assert.equal(s.stage, 7)
+      for (let i = 0; i < 8; i++) await ev(1, 1, 900)                 // 7 → 0 → Reading (section 1)
       assert.equal(await app.eval(() => window.noor.mode), 'reading')
       assert.equal(await app.eval(() => window.noor.page), p)
     }
@@ -176,10 +179,12 @@ async function footerInkColumns(app, png) {
     let markers = 0, hiddenWords = 0
     for (const p of [2, 50, 187, 302, 586, 604]) {
       await app.render(p => window.noor.jumpToPage(p), p)
-      await app.render(() => window.noor.memo.start(777))
-      const n = await app.eval(() => window.noor.memo.state.sectionCount)
+      const n = await app.eval(() => window.noor.totalScreens)
       for (let k = 0; k < n; k++) {
-        if (k > 0) await app.render(() => { while (window.noor.memo.state.stage > 0) window.noor.memo.back(); window.noor.memo.tap() })
+        // Start the flow on section k (test hook starts at the current screen's section)
+        await app.render(p => window.noor.jumpToPage(p), p)
+        for (let j = 0; j < k; j++) { await wait(410); await app.render(() => window.noor.nextScreen()) }
+        await app.render(() => window.noor.memo.start(777))
         const img0 = await app.composite()
         await app.render(() => { for (let i = 0; i < 7; i++) window.noor.memo.advance() })
         const img7 = await app.composite()

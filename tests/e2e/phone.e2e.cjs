@@ -27,7 +27,8 @@ const check = (name, fn) => fn().then(
   const state = () => app.eval(() => window.noor.memo.state)
   const sends = () => app.eval(() => window.__sends)
   const text = sel => p.textContent(sel)
-  const ev = async (t, src = 1) => { await app.event(t, src); await wait(430); await app.settle(40) }
+  const ev = async (t, src = 1, gap = 430) => { await app.event(t, src); await wait(gap); await app.settle(40) }
+  const evB = (t, src = 1) => ev(t, src, 900)   // after crossing a phase/section boundary (800 ms cooldown)
   /** Click a phone control and require a fresh 4-tile G2 render. */
   const click = async sel => {
     const before = await sends()
@@ -104,21 +105,23 @@ const check = (name, fn) => fn().then(
     await ev(1); assert.equal((await state()).stage, 3)
     assert.equal((await layout()).filter(t => t.hidden).map(t => `${t.word}`).join(','), hiddenAt[3])
     await ev(2); assert.equal((await layout()).filter(t => t.hidden).map(t => `${t.word}`).join(','), hiddenAt[4])
-    await ev(0)                                                           // tap → section 2
-    assert.equal((await state()).section, 1); assert.match(await text('#lessonStatus'), /المقطع ٢\/٣/)
+    await ev(0)                                                           // M1.2-B: tap does nothing in دروس
+    assert.equal((await state()).section, 0); assert.equal((await state()).stage, 4)
+    assert.match(await text('#lessonStatus'), /المقطع ١\/٣ · المرحلة ٤ من ٧/)
   })
 
-  await check('Recall forward/back via SDK events; phone count follows; stage 7 → recall switches panel to تسطير', async () => {
+  await check('Section recall via SDK events; دروس panel shows section تسطير progress; back to stage 7', async () => {
     while ((await state()).stage < 7) await ev(2)
-    await ev(2)                                                           // past stage 7 → recall
-    let s = await state(); assert.equal(s.phase, 'recall'); assert.equal(s.activity, 'lesson')
-    assert.ok(await p.$eval('#tasteerPanel', e => e.classList.contains('active')))
-    for (let i = 1; i <= 3; i++) { await ev(2); assert.match(await text('#tasteerStatus'), new RegExp(`ظهرت ${String.fromCharCode(0x660 + i)} من`)) }
-    await ev(1); s = await state(); assert.equal(s.recallIndex, 1)
-    assert.match(await text('#tasteerStatus'), /ظهرت ٢ من/)
-    await ev(1); await ev(1); await ev(1)                                 // back to stage 7 (دروس rule)
-    s = await state(); assert.equal(s.phase, 'memo'); assert.equal(s.stage, 7)
+    await evB(2)                                                          // past stage 7 → section recall
+    let s = await state(); assert.equal(s.phase, 'recall'); assert.equal(s.activity, 'lesson'); assert.equal(s.k, 0)
     assert.ok(await p.$eval('#lessonPanel', e => e.classList.contains('active')))
+    assert.ok(!(await p.$eval('#tasteerPanel', e => e.classList.contains('active'))))
+    for (let i = 1; i <= 3; i++) { await ev(2); assert.match(await text('#lessonStatus'), new RegExp(`تسطير ${String.fromCharCode(0x660 + i)} من`)) }
+    await ev(1); s = await state(); assert.equal(s.index, 1)
+    assert.match(await text('#lessonStatus'), /المقطع ١\/٣ · تسطير ٢ من/)
+    await ev(1); await ev(1); await ev(1)                                 // back to stage 7
+    s = await state(); assert.equal(s.phase, 'memo'); assert.equal(s.stage, 7)
+    assert.match(await text('#lessonStatus'), /المرحلة ٧ من ٧/)
   })
 
   await check('Switching activities starts fresh state; Reading Mode / page jump / End leave the activity cleanly', async () => {
@@ -165,7 +168,9 @@ const check = (name, fn) => fn().then(
         await click(btn)
         const s = await state(); assert.equal(s.sectionCount, n, `page ${page}`)
         for (let i = 0; i < n; i++) await ev(0)
-        assert.equal((await state()).section, 0, `page ${page}: tap did not wrap`)
+        const t = await state()
+        if (btn === '#btnStartLesson') { assert.equal(t.section, 0); assert.equal(t.k, 0); assert.equal(t.stage, 0) }   // taps ignored in دروس
+        else assert.equal(t.section, 0, `page ${page}: tap did not wrap in تسطير`)
       }
       // تسطير to the end of the page: every word revealed, last section shown
       await app.render(() => { for (let i = 0; i < 400; i++) window.noor.memo.advance() })
