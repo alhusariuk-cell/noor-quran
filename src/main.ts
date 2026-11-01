@@ -16,6 +16,8 @@
  * ─── Modes ────────────────────────────────────────────────────────────────────
  *   READING  – 5 lines of Quranic text per screen, 3 screens per page
  *   SELECTOR – surah picker, 7 rows visible, one highlighted
+ *   MEMO     – memorisation (حفظ) and recall (تسميع) for the current page
+ *              (test builds; logic in memorisation.ts)
  *
  * ─── Navigation ───────────────────────────────────────────────────────────────
  *   READING mode:
@@ -29,6 +31,17 @@
  *     Swipe back     → highlight previous surah
  *     Single tap     → confirm → jump to highlighted surah → READING
  *     Double tap     → cancel → return to READING
+ *     A "حفظ هذه الصفحة" row sits directly above the current surah;
+ *     confirming it starts MEMO on the current page and screen.
+ *
+ *   MEMO mode (mapped by SDK event id, not by physical swipe direction):
+ *     SCROLL_BOTTOM_EVENT → next stage (0–7); past stage 7 → recall;
+ *                           in recall: reveal next word
+ *     SCROLL_TOP_EVENT    → previous stage; at stage 0 → back to READING;
+ *                           in recall: re-hide last word; before the
+ *                           first word → back to stage 7
+ *     Single tap          → next five-line section (wraps)
+ *     Double tap          → unchanged: exit popup, as in READING
  */
 import {
   waitForEvenAppBridge,
@@ -39,6 +52,11 @@ import {
   OsEventTypeList,
 } from '@evenrealities/even_hub_sdk'
 import { MUSHAF_DATA } from './mushaf-bundle'
+import {
+  buildMemoPage, startSession, advance as memoAdvanceState, back as memoBackState,
+  nextSection as memoNextSectionState, isWordHidden, revealedCount, MAX_STAGE,
+  type MemoSession,
+} from './memorisation'
 
 // ─── G2 display constants ─────────────────────────────────────────────────────
 const DISPLAY_W    = 576
@@ -124,7 +142,7 @@ interface MushafLine {
   words?: MushafWord[]
 }
 interface MushafPage { page: number; lines: MushafLine[] }
-type AppMode = 'reading' | 'selector'
+type AppMode = 'reading' | 'selector' | 'memo'
 
 // ─── Bookmark ─────────────────────────────────────────────────────────────────
 const BOOKMARK_KEY = 'noor_bookmark'
@@ -197,6 +215,8 @@ let currentPage        = 1
 let currentScreen      = 0
 let currentSurahNum    = 0   // surah number last confirmed; 0 = not set
 let selectorIndex      = 0
+let selectorMemoRow    = -1  // index of the "حفظ هذه الصفحة" row in the selector list
+let memo: MemoSession | null = null
 let fontLoaded         = false
 let lastEventTime      = 0
 let lastNavTime: Record<number, number> = {}
@@ -409,14 +429,29 @@ function renderLinesToQuads(
 }
 
 // ─── Selector mode rendering ──────────────────────────────────────────────────
+const MEMO_ROW_LABEL = 'حفظ هذه الصفحة'
+
+/** Selector rows: the surahs, with the memorisation row inserted at selectorMemoRow. */
+function selectorItemCount(): number {
+  return SURAHS.length + (selectorMemoRow >= 0 ? 1 : 0)
+}
+/** Surah at a selector row, or null for the memorisation row. */
+function selectorItem(i: number): [number, string, number, number] | null {
+  if (selectorMemoRow < 0 || i < selectorMemoRow) return SURAHS[i]
+  if (i === selectorMemoRow) return null
+  return SURAHS[i - 1]
+}
+
 function renderSelectorQuads(): [number[], number[], number[], number[]] {
   const [canvas, ctx] = makeCanvas(IMG_W, IMG_H)
   const rowH = Math.floor(TEXT_AREA_H / SELECTOR_VISIBLE)
   const half  = Math.floor(SELECTOR_VISIBLE / 2)
-  const start = Math.max(0, Math.min(selectorIndex - half, SURAHS.length - SELECTOR_VISIBLE))
-  const visible = SURAHS.slice(start, start + SELECTOR_VISIBLE)
+  const start = Math.max(0, Math.min(selectorIndex - half, selectorItemCount() - SELECTOR_VISIBLE))
+  const visible: ([number, string, number, number] | null)[] = []
+  for (let r = start; r < Math.min(start + SELECTOR_VISIBLE, selectorItemCount()); r++) visible.push(selectorItem(r))
 
-  visible.forEach(([num, name], i) => {
+  visible.forEach((item, i) => {
+    const [num, name] = item ?? [0, MEMO_ROW_LABEL]
     const isSelected = (start + i) === selectorIndex
     const y = i * rowH
     if (isSelected) {
@@ -429,6 +464,7 @@ function renderSelectorQuads(): [number[], number[], number[], number[]] {
     ctx.textBaseline = 'middle'
     ctx.direction = 'rtl'
     ctx.fillText(name, COL_RIGHT, y + rowH / 2)
+    if (!item) return   // memorisation row: no surah number
     // Surah number on the left
     ctx.fillStyle = isSelected ? '#000' : '#888'
     ctx.font = '11px monospace'
@@ -498,6 +534,7 @@ async function setupContainers(): Promise<void> {
 
 function resumeRender(): void {
   if (mode === 'reading') renderReadingView()
+  else if (mode === 'memo') renderMemoView()
   else renderSelectorView()
 }
 
@@ -572,13 +609,22 @@ function enterSelector(): void {
   const closest = SURAHS.reduce((best, s, i) =>
     Math.abs(s[2] - currentPage) < Math.abs(SURAHS[best][2] - currentPage) ? i : best
   , 0)
-  selectorIndex = closest
+  // The memorisation row sits directly above the current surah, which stays
+  // highlighted on opening exactly as before (one swipe back reaches the row).
+  selectorMemoRow = closest
+  selectorIndex = closest + 1
   mode = 'selector'
   renderSelectorView()
 }
 
 function confirmSelector(): void {
-  const [surahNum, , page] = SURAHS[selectorIndex]
+  const item = selectorItem(selectorIndex)
+  if (!item) {
+    selectorConfirmedAt = Date.now()
+    startMemo()
+    return
+  }
+  const [surahNum, , page] = item
   console.log(`[Noor] confirmSelector: surah ${surahNum}, page ${page}`)
   mode            = 'reading'
   currentPage     = page
@@ -591,13 +637,223 @@ function confirmSelector(): void {
   renderReadingView()
 }
 
+// ─── Memorisation mode (حفظ / تسميع) ──────────────────────────────────────────
+const MEMO_PLACEHOLDER_COLOR = '#888'
+const MEMO_PLACEHOLDER_H     = 2      // px
+const MEMO_PLACEHOLDER_FILL  = 0.85   // fraction of the word's width (as in Hafiz)
+
+interface PlacedToken { text: string; role: 'word' | 'ayah'; word: number; x: number; w: number }
+interface PlacedLine { type: string; text: string; y: number; fs: number; tokens: PlacedToken[] }
+
+/**
+ * Lay out one five-line section exactly as renderLinesToQuads does (font
+ * fitting and RTL word-gap justification), with every word present.
+ */
+function layoutMemoSection(ctx: CanvasRenderingContext2D, s: MemoSession): PlacedLine[] {
+  const start = s.section * LINES_PER_SCREEN
+  const lines = s.page.lines.slice(start, start + LINES_PER_SCREEN)
+  const lineH = Math.floor(TEXT_AREA_H / LINES_PER_SCREEN)   // Reading pads to 5 lines too
+  return lines.map((line, i) => {
+    const y = i * lineH + lineH / 2
+    const placed: PlacedLine = { type: line.type, text: line.text, y, fs: TEXT_FONT_SIZE, tokens: [] }
+    if (line.type !== 'text' || line.tokens.length === 0) return placed
+    const tokens = line.tokens
+    let fs = TEXT_FONT_SIZE
+    ctx.font = `${fs}px '${ARABIC_FONT_FAMILY}', serif`
+    while (ctx.measureText(line.text).width > TEXT_COL_W && fs > 12) {
+      fs--
+      ctx.font = `${fs}px '${ARABIC_FONT_FAMILY}', serif`
+    }
+    placed.fs = fs
+    const widths = tokens.map(t => ctx.measureText(t.text).width)
+    if (tokens.length === 1) {
+      placed.tokens.push({ ...tokens[0], x: IMG_W / 2 - widths[0] / 2, w: widths[0] })
+      return placed
+    }
+    const totalW = widths.reduce((a, b) => a + b, 0)
+    const gap = Math.max(0, (TEXT_COL_W - totalW) / (tokens.length - 1))
+    let x = COL_RIGHT
+    for (let ti = 0; ti < tokens.length; ti++) {
+      x -= widths[ti]
+      placed.tokens.push({ ...tokens[ti], x, w: widths[ti] })
+      if (ti < tokens.length - 1) x -= gap
+    }
+    return placed
+  })
+}
+
+/**
+ * Render one five-line section of the memorisation page. Visible tokens are
+ * drawn at their Reading Mode positions; hidden words become thin placeholders
+ * at those same positions, so nothing reflows between stages.
+ */
+function renderMemoQuads(s: MemoSession, pageNum: number): [number[], number[], number[], number[]] {
+  const lineH = Math.floor(TEXT_AREA_H / LINES_PER_SCREEN)
+  const [canvas, ctx] = makeCanvas(IMG_W, IMG_H)
+  ctx.fillStyle = '#fff'
+  ctx.direction = 'rtl'
+  ctx.textBaseline = 'middle'
+
+  layoutMemoSection(ctx, s).forEach((line, i) => {
+    const y = line.y
+    ctx.fillStyle = '#fff'
+    if (line.type === 'surah-header') {
+      ctx.strokeStyle = '#666'; ctx.lineWidth = 1
+      ctx.beginPath(); ctx.moveTo(COL_LEFT, i * lineH + 3); ctx.lineTo(COL_RIGHT, i * lineH + 3); ctx.stroke()
+      ctx.beginPath(); ctx.moveTo(COL_LEFT, (i + 1) * lineH - 3); ctx.lineTo(COL_RIGHT, (i + 1) * lineH - 3); ctx.stroke()
+      ctx.font = `${HEADER_FONT_SIZE}px '${ARABIC_FONT_FAMILY}', serif`
+      ctx.textAlign = 'center'
+      const rawText = line.text.trim()
+      const headerName = rawText.startsWith('سورة ') ? rawText : `سورة ${rawText}`
+      ctx.fillText(headerName, IMG_W / 2, y)
+      return
+    }
+    if (line.type === 'basmala') {
+      ctx.font = `${HEADER_FONT_SIZE}px '${ARABIC_FONT_FAMILY}', serif`
+      ctx.textAlign = 'center'
+      ctx.fillText('بِسْمِ ٱللَّهِ ٱلرَّحْمَـٰنِ ٱلرَّحِيمِ', IMG_W / 2, y)
+      return
+    }
+    if (line.tokens.length === 0) return
+    ctx.font = `${line.fs}px '${ARABIC_FONT_FAMILY}', serif`
+    // Visible tokens are drawn; hidden words collect their horizontal extent
+    const spans = new Map<number, [number, number]>()
+    ctx.textAlign = 'left'
+    for (const t of line.tokens) {
+      if (t.role === 'word' && isWordHidden(s, t.word)) {
+        const sp = spans.get(t.word)
+        const l = t.x, r = t.x + t.w
+        spans.set(t.word, sp ? [Math.min(sp[0], l), Math.max(sp[1], r)] : [l, r])
+      } else {
+        ctx.fillText(t.text, t.x, y)
+      }
+    }
+    ctx.fillStyle = MEMO_PLACEHOLDER_COLOR
+    for (const [l, r] of spans.values()) {
+      const w = (r - l) * MEMO_PLACEHOLDER_FILL
+      ctx.fillRect(Math.round(l + (r - l - w) / 2), Math.round(y), Math.max(1, Math.round(w)), MEMO_PLACEHOLDER_H)
+    }
+  })
+
+  drawMemoFooter(ctx, s, pageNum)
+  return sliceQuadrants(canvas)
+}
+
+/** Footer: page + section (left) · stage dots or revealed/total (centre) · mode (right). */
+function drawMemoFooter(ctx: CanvasRenderingContext2D, s: MemoSession, pageNum: number): void {
+  ctx.strokeStyle = '#555'; ctx.lineWidth = 1
+  ctx.beginPath(); ctx.moveTo(COL_LEFT, TEXT_AREA_H); ctx.lineTo(COL_RIGHT, TEXT_AREA_H); ctx.stroke()
+  const footerY = TEXT_AREA_H + FOOTER_H / 2
+  ctx.textBaseline = 'middle'
+  ctx.fillStyle = FOOTER_COLOR; ctx.strokeStyle = FOOTER_COLOR
+  // Left: page number (as in Reading) followed by section n/total
+  ctx.font = `${FOOTER_FONT_SIZE}px monospace`
+  ctx.textAlign = 'left'; ctx.direction = 'ltr'
+  const pageLabel = `ص${toArabicNumerals(pageNum)}`
+  ctx.fillText(pageLabel, COL_LEFT, footerY)
+  const sectionX = COL_LEFT + ctx.measureText(pageLabel).width + FOOTER_GAP
+  ctx.fillText(`${toArabicNumerals(s.section + 1)}/${toArabicNumerals(s.page.sectionCount)}`, sectionX, footerY)
+  // Centre: seven stage dots (filled = hidden stages reached) or recall progress
+  if (s.phase === 'memo') {
+    const step = 16, r = 4
+    const x0 = IMG_W / 2 - (step * (MAX_STAGE - 1)) / 2
+    for (let k = 0; k < MAX_STAGE; k++) {
+      ctx.beginPath(); ctx.arc(x0 + k * step, footerY, r, 0, Math.PI * 2)
+      if (k < s.stage) ctx.fill()
+      else { ctx.lineWidth = 1; ctx.stroke() }
+    }
+  } else {
+    ctx.textAlign = 'center'
+    ctx.fillText(
+      `${toArabicNumerals(revealedCount(s))}/${toArabicNumerals(s.page.words.length)}`,
+      IMG_W / 2, footerY)
+  }
+  // Right: mode label
+  ctx.font = `${FOOTER_FONT_SIZE}px '${ARABIC_FONT_FAMILY}', serif`
+  ctx.textAlign = 'right'; ctx.direction = 'rtl'
+  ctx.fillText(s.phase === 'memo' ? 'حفظ' : 'تسميع', COL_RIGHT, footerY)
+}
+
+async function _doRenderMemoView(): Promise<void> {
+  const gen = renderGeneration
+  await ensureFontLoaded()
+  if (gen !== renderGeneration || !memo) return
+  const quads = renderMemoQuads(memo, currentPage)
+  if (gen !== renderGeneration) return
+  await sendQuads(quads)
+}
+
+function renderMemoView(): void {
+  enqueueRender(async () => {
+    try { await _doRenderMemoView() }
+    catch (e: any) { console.error('[Noor] Memo render error:', e) }
+  })
+}
+
+function logMemo(action: string): void {
+  if (!memo) return
+  console.log(`[Noor][memo] ${action} → phase=${memo.phase} stage=${memo.stage} ` +
+    `recall=${revealedCount(memo)}/${memo.page.words.length} section=${memo.section + 1}/${memo.page.sectionCount}`)
+}
+
+/** Start memorisation on the current page and screen with a fresh session seed. */
+function startMemo(seed?: number): void {
+  const page = buildMemoPage(getPage(currentPage).lines)
+  const sessionSeed = (seed ?? (Date.now() ^ (currentPage * 2654435761))) >>> 0
+  memo = startSession(page, sessionSeed, currentScreen)
+  mode = 'memo'
+  console.log(`[Noor][memo] start page=${currentPage} seed=${sessionSeed} words=${page.words.length} sections=${page.sectionCount}`)
+  renderMemoView()
+}
+
+function exitMemo(): void {
+  if (memo) currentScreen = memo.section
+  memo = null
+  mode = 'reading'
+  console.log(`[Noor][memo] exit → reading page=${currentPage} screen=${currentScreen}`)
+  saveBookmark()
+  renderReadingView()
+}
+
+/** SCROLL_BOTTOM_EVENT in memo mode. */
+function memoAdvance(): void {
+  const now = Date.now()
+  if (now - (lastNavTime[2] ?? 0) < NAV_DEBOUNCE_MS) return
+  lastNavTime[2] = now
+  if (!memo) return
+  memo = memoAdvanceState(memo)
+  logMemo('advance')
+  renderMemoView()
+}
+
+/** SCROLL_TOP_EVENT in memo mode. */
+function memoBack(): void {
+  const now = Date.now()
+  if (now - (lastNavTime[1] ?? 0) < NAV_DEBOUNCE_MS) return
+  lastNavTime[1] = now
+  if (!memo) return
+  const r = memoBackState(memo)
+  if (r === 'exit') { exitMemo(); return }
+  memo = r
+  logMemo('back')
+  renderMemoView()
+}
+
+/** Single press in memo mode. */
+function memoTap(): void {
+  if (!memo || Date.now() - selectorConfirmedAt <= CONFIRM_COOLDOWN_MS) return
+  memo = memoNextSectionState(memo)
+  logMemo('next section')
+  renderMemoView()
+}
+
 // ─── Navigation ───────────────────────────────────────────────────────────────
 function goNext(): void {
   const now = Date.now()
   if (now - (lastNavTime[2] ?? 0) < NAV_DEBOUNCE_MS) return
   lastNavTime[2] = now
   if (mode === 'selector') {
-    if (selectorIndex < SURAHS.length - 1) selectorIndex++
+    if (selectorIndex < selectorItemCount() - 1) selectorIndex++
     renderSelectorView(); return
   }
   const pageData = getPage(currentPage)
@@ -686,6 +942,15 @@ async function setupNavigation(): Promise<void> {
     // single tap arrived within 350ms and was blocked by the debounce guard.
     if (eventType === 0 && !inSelector && (now - lastEventTime) < EVENT_DEBOUNCE_MS) return
     if (eventType === 0) lastEventTime = now
+    if (mode === 'memo') {
+      // Record which source produced which SDK event, for hardware mapping checks
+      const source = event?.sysEvent?.eventSource ?? event?.jsonData?.eventSource
+      console.log(`[Noor][memo] input eventType=${eventType} eventSource=${source ?? 'n/a'}`)
+      if (eventType === OsEventTypeList.SCROLL_BOTTOM_EVENT) { memoAdvance(); return }
+      if (eventType === OsEventTypeList.SCROLL_TOP_EVENT)    { memoBack(); return }
+      if (eventType === OsEventTypeList.CLICK_EVENT)         { memoTap(); return }
+      // Double tap and lifecycle events fall through to the existing handling
+    }
     switch (eventType) {
       case 1:
         goPrev(); break
@@ -755,7 +1020,9 @@ function hardReset(): void {
     // Directly enqueue and start drainQueue — bypass enqueueRender's renderRunning check
     const fn = mode === 'reading'
       ? async () => { renderReadingView() }
-      : async () => { renderSelectorView() }
+      : mode === 'memo'
+        ? async () => { renderMemoView() }
+        : async () => { renderSelectorView() }
     renderQueue = [fn]
     drainQueue()
   }, 2000)
@@ -826,12 +1093,12 @@ main()
 ;(window as any).noor = {
   jumpToPage: (n: number) => {
     currentPage = Math.max(1, Math.min(TOTAL_PAGES, n))
-    currentScreen = 0; currentSurahNum = 0; mode = 'reading'; saveBookmark(); renderReadingView()
+    currentScreen = 0; currentSurahNum = 0; mode = 'reading'; memo = null; saveBookmark(); renderReadingView()
   },
   jumpToSurah: (n: number) => {
     const s = SURAHS.find(([num]) => num === n)
     if (!s) return
-    currentPage = s[2]; currentSurahNum = n; mode = 'reading'
+    currentPage = s[2]; currentSurahNum = n; mode = 'reading'; memo = null
     const pageData = getPage(s[2])
     currentScreen = screenForSurahHeader(pageData.lines, n)
     saveBookmark(); renderReadingView()
@@ -857,6 +1124,31 @@ main()
       resumeRender()
       if (!renderRunning) drainQueue()
     }, 2000)
+  },
+  // Memorisation test hooks (bypass gesture debounce; used by automated tests)
+  memo: {
+    start: (seed?: number) => startMemo(seed),
+    advance: () => { if (memo) { memo = memoAdvanceState(memo); renderMemoView() } },
+    back: () => {
+      if (!memo) return
+      const r = memoBackState(memo)
+      if (r === 'exit') exitMemo(); else { memo = r; renderMemoView() }
+    },
+    tap: () => { if (memo) { memo = memoNextSectionState(memo); renderMemoView() } },
+    /** Token boxes of the displayed section (for automated pixel checks). */
+    layout: () => {
+      if (!memo) return null
+      const s = memo
+      const [, ctx] = makeCanvas(IMG_W, IMG_H)
+      return layoutMemoSection(ctx, s).flatMap(l => l.tokens.map(t => ({
+        role: t.role, word: t.word, x: t.x, w: t.w, y: l.y, fs: l.fs,
+        hidden: t.role === 'word' && isWordHidden(s, t.word),
+      })))
+    },
+    get state() {
+      return memo && { phase: memo.phase, stage: memo.stage, recallIndex: memo.recallIndex,
+        section: memo.section, sectionCount: memo.page.sectionCount, words: memo.page.words.length, seed: memo.seed }
+    },
   },
   get page()         { return currentPage },
   get screen()        { return currentScreen },
