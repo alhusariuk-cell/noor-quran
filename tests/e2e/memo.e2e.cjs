@@ -184,10 +184,7 @@ async function footerInkColumns(app, png) {
           }
           const A = await load(a), B = await load(b)
           const out = { markerDiffs: [], wordInk: [], ok: 0 }
-          for (const bx of boxes) {
-            // Inner box: avoid neighbouring glyph overhang at the edges
-            const x0 = Math.ceil(bx.x + 1), x1 = Math.floor(bx.x + bx.w - 1)
-            const y0 = Math.round(bx.y - bx.fs * 0.6), y1 = Math.round(bx.y + bx.fs * 0.6)
+          const scan = (x0, x1, y0, y1) => {
             let diff = 0, ink7 = 0, ink0 = 0
             for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) {
               const i = (y * 576 + x) * 4
@@ -195,8 +192,24 @@ async function footerInkColumns(app, png) {
               if (B[i] > 128) ink7++
               if (A[i] > 128) ink0++
             }
-            if (bx.role === 'ayah') { if (diff) out.markerDiffs.push(diff); else out.ok++ }
-            else if (bx.hidden) out.wordInk.push([ink0, ink7, x1 - x0 + 1])
+            return { diff, ink7, ink0 }
+          }
+          // Ayah markers: inner box (1 px in from each side to skip neighbouring overhang)
+          for (const bx of boxes.filter(b => b.role === 'ayah')) {
+            const r = scan(Math.ceil(bx.x + 1), Math.floor(bx.x + bx.w - 1),
+              Math.round(bx.y - bx.fs * 0.6), Math.round(bx.y + bx.fs * 0.6))
+            if (r.diff) out.markerDiffs.push(r.diff); else out.ok++
+          }
+          // Hidden words: union of the word's tokens (word + any pause mark), full glyph height
+          const words = new Map()
+          for (const bx of boxes.filter(b => b.hidden)) {
+            const u = words.get(bx.word)
+            words.set(bx.word, u ? { ...u, l: Math.min(u.l, bx.x), r: Math.max(u.r, bx.x + bx.w) } : { l: bx.x, r: bx.x + bx.w, y: bx.y, fs: bx.fs })
+          }
+          for (const u of words.values()) {
+            const x0 = Math.ceil(u.l + 1), x1 = Math.floor(u.r - 1)
+            const r = scan(x0, x1, Math.round(u.y - u.fs * 0.9), Math.round(u.y + u.fs * 0.9))
+            out.wordInk.push([r.ink0, r.ink7, x1 - x0 + 1])
           }
           return out
         }, [img0.toString('base64'), img7.toString('base64'), boxes])
