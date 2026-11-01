@@ -57,7 +57,7 @@ import {
 import { MUSHAF_DATA } from './mushaf-bundle'
 import {
   buildMemoPage, startSession, startTasteer, advance as memoAdvanceState, back as memoBackState,
-  nextSection as memoNextSectionState, isWordHidden, revealedCount, MAX_STAGE,
+  nextSection as memoNextSectionState, isWordHidden, revealedCount, MAX_STAGE, nextPreviewLine,
   type MemoSession, type Activity,
 } from './memorisation'
 
@@ -744,39 +744,80 @@ function renderMemoQuads(s: MemoSession, pageNum: number): [number[], number[], 
   return sliceQuadrants(canvas)
 }
 
-/** Footer: page + section (left) · stage dots or revealed/total (centre) · mode (right). */
+// ─── Memorisation footer with next-line preview (M1.2 experiment A, Option C) ─
+//
+//   y 0–252   five Quran lines exactly as in Reading Mode (lowest ink on any
+//             page is y = 250.2, measured across all 1,810 sections)
+//   y 253     separator (Reading Mode keeps its separator at y = 258)
+//   y 254–287 footer row, centre y = 272.5:
+//     x 14–93    LEFT  zone: stage dots (دروس) or revealed/total (تسطير)
+//     x 102–474  PREVIEW: next Quran text line, Uthmanic Hafs 16 px, centred
+//     x 483–562  RIGHT zone: activity label + section n/total
+//   The page number is omitted here during memorisation (shown on the phone).
+const MEMO_SEPARATOR_Y   = 253
+const MEMO_FOOTER_Y      = 272.5
+const PREVIEW_FONT_SIZE  = 16
+const PREVIEW_MIN_FONT   = 12
+const PREVIEW_MAX_W      = 372        // 102–474, centred on x = 288
+const PREVIEW_COLOR      = '#8a8a8a'  // dimmer than status (#aaa) and Quran text (#fff)
+const ZONE_W             = 79         // side zones: 14–93 and 483–562
+const ZONE_RULE_COLOR    = '#444'
+const ZONE_RULE_H        = 16
+const STAGE_DOT_R        = 3
+const STAGE_DOT_STEP     = 10
+
+/** Set the largest font ≤ `size` (down to `min`) at which `text` fits `maxW`. */
+function fitFont(ctx: CanvasRenderingContext2D, text: string, family: string, size: number, min: number, maxW: number): void {
+  let fs = size
+  ctx.font = `${fs}px ${family}`
+  while (ctx.measureText(text).width > maxW && fs > min) { fs--; ctx.font = `${fs}px ${family}` }
+}
+
+/** Footer: progress (left) · next-line preview (centre) · activity + section (right). */
 function drawMemoFooter(ctx: CanvasRenderingContext2D, s: MemoSession, pageNum: number): void {
   ctx.strokeStyle = '#555'; ctx.lineWidth = 1
-  ctx.beginPath(); ctx.moveTo(COL_LEFT, TEXT_AREA_H); ctx.lineTo(COL_RIGHT, TEXT_AREA_H); ctx.stroke()
-  const footerY = TEXT_AREA_H + FOOTER_H / 2
+  // +0.5 puts the 1 px line exactly on pixel row 253 (an integer y would blur it over rows 252–253)
+  ctx.beginPath(); ctx.moveTo(COL_LEFT, MEMO_SEPARATOR_Y + 0.5); ctx.lineTo(COL_RIGHT, MEMO_SEPARATOR_Y + 0.5); ctx.stroke()
+  const y = MEMO_FOOTER_Y
   ctx.textBaseline = 'middle'
+  const arabic = `'${ARABIC_FONT_FAMILY}', serif`
+
+  // Preview: the next Quran text line, verbatim, never truncated (shrinks if too wide)
+  const preview = nextPreviewLine(n => getPage(n).lines, pageNum, s.section, TOTAL_PAGES)
+  if (preview) {
+    fitFont(ctx, preview.text, arabic, PREVIEW_FONT_SIZE, PREVIEW_MIN_FONT, PREVIEW_MAX_W)
+    ctx.fillStyle = PREVIEW_COLOR
+    ctx.textAlign = 'center'; ctx.direction = 'rtl'
+    ctx.fillText(preview.text, IMG_W / 2, y)
+  }
+
+  // Thin rules separating the side zones from the preview
+  ctx.strokeStyle = ZONE_RULE_COLOR; ctx.lineWidth = 1
+  for (const x of [COL_LEFT + ZONE_W + 4.5, COL_RIGHT - ZONE_W - 4.5]) {
+    ctx.beginPath(); ctx.moveTo(x, y - ZONE_RULE_H / 2); ctx.lineTo(x, y + ZONE_RULE_H / 2); ctx.stroke()
+  }
+
   ctx.fillStyle = FOOTER_COLOR; ctx.strokeStyle = FOOTER_COLOR
-  // Left: page number (as in Reading) followed by section n/total
-  ctx.font = `${FOOTER_FONT_SIZE}px monospace`
-  ctx.textAlign = 'left'; ctx.direction = 'ltr'
-  const pageLabel = `ص${toArabicNumerals(pageNum)}`
-  ctx.fillText(pageLabel, COL_LEFT, footerY)
-  const sectionX = COL_LEFT + ctx.measureText(pageLabel).width + FOOTER_GAP
-  ctx.fillText(`${toArabicNumerals(s.section + 1)}/${toArabicNumerals(s.page.sectionCount)}`, sectionX, footerY)
-  // Centre: seven stage dots (filled = hidden stages reached) or recall progress
+  // Left zone: seven stage dots (filled = stages reached) or revealed/total
   if (s.phase === 'memo') {
-    const step = 16, r = 4
-    const x0 = IMG_W / 2 - (step * (MAX_STAGE - 1)) / 2
     for (let k = 0; k < MAX_STAGE; k++) {
-      ctx.beginPath(); ctx.arc(x0 + k * step, footerY, r, 0, Math.PI * 2)
+      ctx.beginPath(); ctx.arc(COL_LEFT + STAGE_DOT_R + 1 + k * STAGE_DOT_STEP, y, STAGE_DOT_R, 0, Math.PI * 2)
       if (k < s.stage) ctx.fill()
       else { ctx.lineWidth = 1; ctx.stroke() }
     }
   } else {
-    ctx.textAlign = 'center'
-    ctx.fillText(
-      `${toArabicNumerals(revealedCount(s))}/${toArabicNumerals(s.page.words.length)}`,
-      IMG_W / 2, footerY)
+    const count = `${toArabicNumerals(revealedCount(s))}/${toArabicNumerals(s.page.words.length)}`
+    fitFont(ctx, count, 'monospace', FOOTER_FONT_SIZE, FOOTER_MIN_FONT_SIZE, ZONE_W)
+    ctx.textAlign = 'left'; ctx.direction = 'ltr'
+    ctx.fillText(count, COL_LEFT, y)
   }
-  // Right: mode label
-  ctx.font = `${FOOTER_FONT_SIZE}px '${ARABIC_FONT_FAMILY}', serif`
+  // Right zone: section n/total (left part) and activity label (right part)
+  ctx.font = `${FOOTER_FONT_SIZE}px monospace`
+  ctx.textAlign = 'left'; ctx.direction = 'ltr'
+  ctx.fillText(`${toArabicNumerals(s.section + 1)}/${toArabicNumerals(s.page.sectionCount)}`, COL_RIGHT - ZONE_W, y)
+  ctx.font = `${FOOTER_FONT_SIZE}px ${arabic}`
   ctx.textAlign = 'right'; ctx.direction = 'rtl'
-  ctx.fillText(s.phase === 'memo' ? 'دروس' : 'تسطير', COL_RIGHT, footerY)
+  ctx.fillText(s.phase === 'memo' ? 'دروس' : 'تسطير', COL_RIGHT, y)
 }
 
 async function _doRenderMemoView(): Promise<void> {
@@ -1158,6 +1199,8 @@ main()
       if (r === 'exit') exitMemo(); else { memo = r; renderMemoView() }
     },
     tap: () => { if (memo) { memo = memoNextSectionState(memo); renderMemoView() } },
+    /** The preview line shown for the current section (for automated checks). */
+    preview: () => memo && nextPreviewLine(n => getPage(n).lines, currentPage, memo.section, TOTAL_PAGES),
     /** Token boxes of the displayed section (for automated pixel checks). */
     layout: () => {
       if (!memo) return null

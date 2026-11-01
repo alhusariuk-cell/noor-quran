@@ -238,3 +238,43 @@ export function isWordHidden(s: MemoSession, word: number): boolean {
 export function revealedCount(s: MemoSession): number {
   return s.phase === 'recall' ? s.recallIndex + 1 : 0
 }
+
+// ─── Next-line preview (M1.2 experiment A) ───────────────────────────────────
+
+export interface PreviewLine {
+  /** Mushaf page and 0-based line index the preview comes from. */
+  page: number
+  line: number
+  /** Exactly the string Reading Mode draws for that line (same stripping, same order). */
+  text: string
+}
+
+/**
+ * The first Quran text line after `section` on `page`: from the next section's
+ * first line onwards, continuing onto following pages, skipping surah headings
+ * and basmala lines (as Hafiz does for its next-page preview). Returns null
+ * when no text line follows (end of page 604). The text is taken verbatim from
+ * the Mushaf data — never reconstructed — and is purely informational: it is
+ * not part of the session's hideable words.
+ */
+export function nextPreviewLine(
+  getLines: (page: number) => SourceLine[] | undefined,
+  page: number,
+  section: number,
+  lastPage = 604,
+): PreviewLine | null {
+  let p = page
+  let i = (section + 1) * LINES_PER_SECTION
+  while (p <= lastPage) {
+    const lines = getLines(p) ?? []
+    for (; i < lines.length; i++) {
+      const l = lines[i]
+      if (l.type !== 'text') continue
+      const src = l.words ?? []
+      const text = stripMarks(src.length > 0 ? src.map(w => w.word).join(' ') : (l.text ?? ''))
+      if (text.trim()) return { page: p, line: i, text }
+    }
+    p++; i = 0
+  }
+  return null
+}

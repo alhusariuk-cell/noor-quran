@@ -5,7 +5,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import {
   buildMemoPage, hidingOrder, hiddenCountAtStage, startSession, startTasteer, advance, back, nextSection,
-  isWordHidden, revealedCount, sectionOfWord, stripMarks, STRIP_RE, MAX_STAGE,
+  isWordHidden, revealedCount, sectionOfWord, stripMarks, STRIP_RE, MAX_STAGE, nextPreviewLine,
 } from '../src/memorisation.ts'
 import { MUSHAF_DATA } from '../src/mushaf-bundle.ts'
 
@@ -330,4 +330,67 @@ test('a new session never inherits state from the previous one', () => {
   assert.equal(t.recallIndex, -1); assert.equal(t.section, 0); assert.equal(t.stage, MAX_STAGE)
   const l = startSession(page, 3, 0)
   assert.equal(l.stage, 0); assert.equal(l.phase, 'memo'); assert.equal(hiddenSet(l).size, 0)
+})
+
+// ── M1.2 experiment A: next-line preview ─────────────────────────────────────
+
+const getLines = p => MUSHAF_DATA[p]?.lines
+const readingText = l => stripMarks(l.words && l.words.length > 0 ? l.words.map(w => w.word).join(' ') : (l.text ?? ''))
+
+test('preview is the first Quran text line after the section, verbatim, for every section of every page', () => {
+  let checked = 0, skippedHeadings = 0, crossPage = 0
+  for (const p of PAGES) {
+    const sections = memoPage(p).sectionCount
+    for (let k = 0; k < sections; k++) {
+      const pv = nextPreviewLine(getLines, p, k)
+      if (p === 604 && k === sections - 1) { assert.equal(pv, null); continue }
+      assert.ok(pv, `page ${p} section ${k + 1}: no preview`)
+      // Every line from the next section's start up to the preview must be a heading/basmala
+      let q = p, i = (k + 1) * 5
+      while (!(q === pv.page && i === pv.line)) {
+        const lines = MUSHAF_DATA[q].lines
+        if (i >= lines.length) { q++; i = 0; continue }
+        assert.notEqual(lines[i].type, 'text', `page ${p} section ${k + 1}: skipped a text line ${q}:${i}`)
+        skippedHeadings++; i++
+      }
+      const line = MUSHAF_DATA[pv.page].lines[pv.line]
+      assert.equal(line.type, 'text')
+      assert.equal(pv.text, readingText(line))                // exactly what Reading Mode draws
+      if (pv.page !== p) crossPage++
+      checked++
+    }
+  }
+  assert.equal(checked, 1809)                                 // 1,810 sections minus page 604 section 3
+  console.log(`    previews checked: ${checked}; cross-page: ${crossPage}; heading/basmala lines skipped: ${skippedHeadings}`)
+})
+
+test('preview named cases: pages 1, 2, 50, 186, 226, 586, 590 and 604', () => {
+  const at = (p, k) => { const v = nextPreviewLine(getLines, p, k); return v && `${v.page}:${v.line}` }
+  assert.equal(at(1, 0), '1:5')        // section 2 of al-Fatiha
+  assert.equal(at(1, 1), '2:2')        // next page: heading + basmala skipped
+  assert.equal(at(2, 0), '2:5')
+  assert.equal(at(2, 1), '3:0')
+  assert.deepEqual([0, 1, 2].map(k => at(50, k)), ['50:5', '50:10', '51:0'])
+  assert.equal(at(186, 2), '187:1')    // at-Tawbah heading (no basmala) skipped
+  assert.deepEqual([0, 1, 2].map(k => at(226, k)), ['226:5', '226:10', '227:0'])
+  for (const p of [586, 590]) {         // 12-line pages: last section has 2 lines
+    assert.equal(memoPage(p).sectionCount, 3)
+    const last = nextPreviewLine(getLines, p, 2)
+    assert.equal(last.page, p + 1)
+  }
+  // Page 604: lines 5 and 10 are the basmalas of al-Falaq and an-Nas, so the preview skips to 6 and 11
+  assert.deepEqual([0, 1].map(k => at(604, k)), ['604:6', '604:11'])
+  assert.equal(nextPreviewLine(getLines, 604, 2), null)       // end of the Mushaf
+})
+
+test('preview never belongs to the current section and does not change the session words', () => {
+  for (const p of [1, 2, 50, 186, 226, 586, 590, 604]) {
+    const page = memoPage(p)
+    for (let k = 0; k < page.sectionCount; k++) {
+      const pv = nextPreviewLine(getLines, p, k)
+      if (!pv) continue
+      assert.ok(pv.page > p || pv.line >= (k + 1) * 5)
+    }
+    assert.equal(memoPage(p).words.length, page.words.length)
+  }
 })

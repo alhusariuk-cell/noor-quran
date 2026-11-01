@@ -120,7 +120,9 @@ async function footerInkColumns(app, png) {
         assert.equal(st.section, k, `page ${p}: memo did not open on screen ${k + 1}`)
         const memo = await app.composite()
         const d = await diffRegions(app, reading, memo)
-        const bad = d.rows.filter(y => y < 258)
+        // Rows 0–252 hold the five Quran lines (lowest ink anywhere: y = 250.2). From M1.2 the
+        // memorisation footer separator is at y = 253, so rows 253–287 differ by design.
+        const bad = d.rows.filter(y => y < 253)
         assert.equal(bad.length, 0, `page ${p} screen ${k + 1}: text area differs on rows ${bad.slice(0, 5)}`)
         await app.render(() => window.noor.memo.back())              // stage 0 → back → Reading
         assert.equal(await app.eval(() => window.noor.mode), 'reading')
