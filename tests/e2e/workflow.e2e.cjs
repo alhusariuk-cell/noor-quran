@@ -124,10 +124,11 @@ const ar = n => String(n).replace(/\d/g, d => String.fromCharCode(0x660 + +d))
     const shotsAt = { 'memo|k0|s4': 'p50-s1-stage4', 'memo|k0|s7': 'p50-s1-stage7', 'memo|k1|s0': 'p50-s2-stage0' }
     while (f.phase !== 'complete') {
       const next = M.flowAdvance(f)
-      const b = sends()
+      if (lastBoundary) await wait(450)                               // honour the 800 ms boundary cooldown
+      const b = await sends()
       await app.event(2, steps % 5 === 0 ? 2 : 1)                    // mix ring (2) and temple (1) sources
-      await wait(lastBoundary ? 880 : 430); await app.settle(30)
-      assert.ok((await sends()) >= (await b) + 4, `step ${steps}: G2 not refreshed`)
+      await wait(430); await app.settle(30)
+      assert.ok((await sends()) >= b + 4, `step ${steps + 1}: G2 not refreshed`)
       lastBoundary = isBoundary(f, next)
       if (lastBoundary) transitions.push(`${f.phase}${f.k + 1}→${next.phase}${next.k + 1}`)
       f = next; steps++
@@ -151,7 +152,8 @@ const ar = n => String(n).replace(/\d/g, d => String.fromCharCode(0x660 + +d))
     let back = 0; lastBoundary = false
     for (;;) {
       const prev = M.flowBack(f)
-      await app.event(1); await wait(lastBoundary ? 880 : 430); await app.settle(30)
+      if (lastBoundary) await wait(450)
+      await app.event(1); await wait(430); await app.settle(30)
       back++
       if (prev === 'exit') break
       lastBoundary = isBoundary(f, prev)
