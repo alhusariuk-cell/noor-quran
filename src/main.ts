@@ -43,31 +43,31 @@ import { MUSHAF_DATA } from './mushaf-bundle'
 // ─── G2 display constants ─────────────────────────────────────────────────────
 const DISPLAY_W    = 576
 const DISPLAY_H    = 288
-const IMG_W        = 400          // canvas width  (2 × QUAD_W)
-const IMG_H        = 200          // canvas height (2 × QUAD_H)
-const QUAD_W       = 200
-const QUAD_H       = 100
+const IMG_W        = 576          // experimental full-width canvas
+const IMG_H        = 288          // experimental full-height canvas
+const QUAD_W       = 288
+const QUAD_H       = 144
 const IMG_OFFSET_X = (DISPLAY_W - IMG_W) / 2   // 88
 const IMG_OFFSET_Y = (DISPLAY_H - IMG_H) / 2   // 44
 
-// ─── Layout zones within the 400×200 canvas ──────────────────────────────────
+// ─── Layout zones within the 576×288 canvas ──────────────────────────────────
 //
 //   Text area:  y 0  – 174  (174 px for 5 lines)
 //   Separator:  y 175
 //   Footer:     y 176 – 199 (24 px)
 //
-const TEXT_AREA_H      = 174
+const TEXT_AREA_H      = 258
 const FOOTER_H         = IMG_H - TEXT_AREA_H   // 26 px
 const LINES_PER_SCREEN = 5
 
 // ─── Typography ───────────────────────────────────────────────────────────────
 const ARABIC_FONT_URL    = '/fonts/UthmanicHafs.woff2'
 const ARABIC_FONT_FAMILY = 'UthmanicHafs'
-const TEXT_FONT_SIZE     = 20    // px
-const HEADER_FONT_SIZE   = 16    // surah-header / basmala
+const TEXT_FONT_SIZE     = 27    // px
+const HEADER_FONT_SIZE   = 22    // surah-header / basmala
 
 // Text column — slightly narrower than full canvas to leave breathing room
-const TEXT_COL_W  = 380
+const TEXT_COL_W  = 548
 const COL_LEFT    = (IMG_W - TEXT_COL_W) / 2   // 10
 const COL_RIGHT   = COL_LEFT + TEXT_COL_W       // 390
 
@@ -265,11 +265,11 @@ function canvasToPngNumberArray(canvas: HTMLCanvasElement): number[] {
   return bytes
 }
 
-/** Slice the 400×200 canvas into 4 quadrant JPEG number[] arrays (TL, TR, BL, BR).
+/** Slice the 576×288 canvas into 4 quadrant JPEG number[] arrays (TL, TR, BL, BR).
  * Sequential (not parallel) to avoid race conditions between async fetch() calls
  * sharing the same canvas context. Canvas width is reassigned to fully reset
  * all context state between uses (clearRect alone does not reset transforms etc). */
-/** Slice the 400×200 canvas into 4 quadrant PNG number[] arrays (TL, TR, BL, BR) */
+/** Slice the 576×288 canvas into 4 quadrant PNG number[] arrays (TL, TR, BL, BR) */
 function sliceQuadrants(canvas: HTMLCanvasElement): [number[], number[], number[], number[]] {
   const quad = (sx: number, sy: number): number[] => {
     const [t, tc] = makeCanvas(QUAD_W, QUAD_H)
@@ -308,7 +308,7 @@ function surahNameForPage(page: number): string {
 
 // ─── Reading mode rendering ───────────────────────────────────────────────────
 /**
- * Render 5 lines of Quranic text onto a 400×200 canvas with a footer bar,
+ * Render 5 lines of Quranic text onto a 576×288 canvas with a footer bar,
  * then slice into 4 quadrant tiles.
  */
 function renderLinesToQuads(
