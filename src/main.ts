@@ -66,6 +66,12 @@ const ARABIC_FONT_FAMILY = 'UthmanicHafs'
 const TEXT_FONT_SIZE     = 27    // px
 const HEADER_FONT_SIZE   = 22    // surah-header / basmala
 
+// Reading footer (page number · screen counter · surah name)
+const FOOTER_FONT_SIZE     = 16      // px (was 11)
+const FOOTER_MIN_FONT_SIZE = 11      // smallest size a long surah name may shrink to
+const FOOTER_COLOR         = '#aaa'  // slightly brighter than the previous #888
+const FOOTER_GAP           = 12      // min px between centre counter and surah name
+
 // Text column — slightly narrower than full canvas to leave breathing room
 const TEXT_COL_W  = 548
 const COL_LEFT    = (IMG_W - TEXT_COL_W) / 2   // 14
@@ -374,23 +380,30 @@ function renderLinesToQuads(
   })
 
   // ── Footer bar ────────────────────────────────────────────────────────────────
-  ctx.strokeStyle = '#444'; ctx.lineWidth = 1
+  ctx.strokeStyle = '#555'; ctx.lineWidth = 1
   ctx.beginPath(); ctx.moveTo(COL_LEFT, TEXT_AREA_H); ctx.lineTo(COL_RIGHT, TEXT_AREA_H); ctx.stroke()
   const footerY = TEXT_AREA_H + FOOTER_H / 2
   ctx.textBaseline = 'middle'
   // Left: page number
-  ctx.fillStyle = '#888'; ctx.font = '11px monospace'
+  ctx.fillStyle = FOOTER_COLOR; ctx.font = `${FOOTER_FONT_SIZE}px monospace`
   ctx.textAlign = 'left'; ctx.direction = 'ltr'
   ctx.fillText(`ص${toArabicNumerals(pageNum)}`, COL_LEFT, footerY)
   // Centre: screen counter
+  const counter = `${toArabicNumerals(screenIdx + 1)}/${toArabicNumerals(totalScreens)}`
+  const counterHalfW = ctx.measureText(counter).width / 2
   ctx.textAlign = 'center'
-  ctx.fillText(`${toArabicNumerals(screenIdx + 1)}/${toArabicNumerals(totalScreens)}`, IMG_W / 2, footerY)
-  // Right: surah name
+  ctx.fillText(counter, IMG_W / 2, footerY)
+  // Right: surah name — shrink locally if it would reach the centre counter
   if (surahName) {
-    ctx.fillStyle = '#888'
-    ctx.font = `11px '${ARABIC_FONT_FAMILY}', serif`
+    const maxNameW = COL_RIGHT - (IMG_W / 2 + counterHalfW + FOOTER_GAP)
+    let fs = FOOTER_FONT_SIZE
+    ctx.font = `${fs}px '${ARABIC_FONT_FAMILY}', serif`
+    while (ctx.measureText(surahName).width > maxNameW && fs > FOOTER_MIN_FONT_SIZE) {
+      fs--
+      ctx.font = `${fs}px '${ARABIC_FONT_FAMILY}', serif`
+    }
     ctx.textAlign = 'right'; ctx.direction = 'rtl'
-    ctx.fillText(surahName, COL_RIGHT, footerY)
+    ctx.fillText(surahName, COL_RIGHT, footerY, maxNameW)
   }
   return sliceQuadrants(canvas)
 }
