@@ -1,7 +1,7 @@
 {
-  "package_id": "com.noor.quran.fullscreen.test",
+  "package_id": "com.noor.quran",
   "edition": "202601",
-  "name": "Noor Quran FS Test",
+  "name": "Noor Quran",
   "version": "4.7.0",
   "min_app_version": "1.0.0",
   "min_sdk_version": "0.0.10",
