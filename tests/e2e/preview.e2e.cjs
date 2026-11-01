@@ -84,7 +84,8 @@ const G = { sepY: 253, footY: 272.5, size: 16, min: 12, maxW: 372, color: '#8a8a
           await app.render(fn)
           const st = await app.eval(() => window.noor.memo.state)
           if (name === 'lesson-s0') assert.equal(st.section, k)
-          await checkScreen(app, { p, k, name, reading, expected, st })
+          // Recall moves the view to the revealed word's section, so expect that section's preview
+          await checkScreen(app, { p, k: st.section, name, reading, expected: nextPreviewLine(getLines, p, st.section), st })
           if (samples && name !== 'recall') fs.writeFileSync(`${samples}/p${p}-s${k + 1}-${name}.png`, await app.composite())
           screens++
         }
