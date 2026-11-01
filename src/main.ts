@@ -8,10 +8,10 @@
  *
  * ─── G2 display layout ────────────────────────────────────────────────────────
  *   Physical display: 576 × 288 px
- *   Canvas: 400 × 200 px, centred at offset (88, 44)
- *   4 image containers in a 2×2 grid, each 200 × 100 px:
- *     TL (88, 44)   TR (288, 44)
- *     BL (88, 144)  BR (288, 144)
+ *   Canvas: 576 × 288 px (EXPERIMENTAL full-screen), offset (0, 0)
+ *   4 image containers in a 2×2 grid, each 288 × 144 px (SDK max size):
+ *     TL (0, 0)     TR (288, 0)
+ *     BL (0, 144)   BR (288, 144)
  *
  * ─── Modes ────────────────────────────────────────────────────────────────────
  *   READING  – 5 lines of Quranic text per screen, 3 screens per page
@@ -47,17 +47,17 @@ const IMG_W        = 576          // experimental full-width canvas
 const IMG_H        = 288          // experimental full-height canvas
 const QUAD_W       = 288
 const QUAD_H       = 144
-const IMG_OFFSET_X = (DISPLAY_W - IMG_W) / 2   // 88
-const IMG_OFFSET_Y = (DISPLAY_H - IMG_H) / 2   // 44
+const IMG_OFFSET_X = (DISPLAY_W - IMG_W) / 2   // 0
+const IMG_OFFSET_Y = (DISPLAY_H - IMG_H) / 2   // 0
 
 // ─── Layout zones within the 576×288 canvas ──────────────────────────────────
 //
-//   Text area:  y 0  – 174  (174 px for 5 lines)
-//   Separator:  y 175
-//   Footer:     y 176 – 199 (24 px)
+//   Text area:  y 0  – 257  (258 px for 5 lines)
+//   Separator:  y 258
+//   Footer:     y 258 – 287 (30 px)
 //
 const TEXT_AREA_H      = 258
-const FOOTER_H         = IMG_H - TEXT_AREA_H   // 26 px
+const FOOTER_H         = IMG_H - TEXT_AREA_H   // 30 px
 const LINES_PER_SCREEN = 5
 
 // ─── Typography ───────────────────────────────────────────────────────────────
@@ -68,8 +68,8 @@ const HEADER_FONT_SIZE   = 22    // surah-header / basmala
 
 // Text column — slightly narrower than full canvas to leave breathing room
 const TEXT_COL_W  = 548
-const COL_LEFT    = (IMG_W - TEXT_COL_W) / 2   // 10
-const COL_RIGHT   = COL_LEFT + TEXT_COL_W       // 390
+const COL_LEFT    = (IMG_W - TEXT_COL_W) / 2   // 14
+const COL_RIGHT   = COL_LEFT + TEXT_COL_W       // 562
 
 // ─── Surah index ──────────────────────────────────────────────────────────────
 // [surahNumber, arabicName, firstMushafPage, firstTileIndex (1-based)]
