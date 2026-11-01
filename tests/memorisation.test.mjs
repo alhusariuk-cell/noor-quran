@@ -7,6 +7,7 @@ import {
   buildMemoPage, hidingOrder, hiddenCountAtStage, startSession, startTasteer, advance, back, nextSection,
   isWordHidden, revealedCount, sectionOfWord, stripMarks, STRIP_RE, MAX_STAGE, nextPreviewLine,
   buildExercises, startFlow, flowAdvance, flowBack, flowHidden, flowProgress, exerciseCount, sectionSeed,
+  makeCheckpoint, restoreCheckpoint, checkpointSum, deriveSection, CHECKPOINT_VERSION, ALG_VERSION,
 } from '../src/memorisation.ts'
 import { MUSHAF_DATA } from '../src/mushaf-bundle.ts'
 
@@ -560,4 +561,87 @@ test('short pages and page 604: section counts, external previews, no preview at
   assert.equal(ex1[1].preview.page, 2); assert.equal(ex1[1].preview.external, true)
   const N1 = memoPage(1).words.length
   assert.ok(ex1[1].preview.tokens.filter(t => t.role === 'word').every(t => t.word >= N1))
+})
+
+// ── M1.3: checkpoints ────────────────────────────────────────────────────────
+
+const APP = 'com.noor.quran.fullscreen.test'
+const rebuild = p => { const page = memoPage(p); return { page, exercises: buildExercises(getLines, page, p) } }
+const cpOf = (f, p, rev = 1, active = true) => makeCheckpoint(f, p, { app: APP, rev, savedAt: 1700000000000 + rev, active })
+const roundTrip = cp => restoreCheckpoint(JSON.parse(JSON.stringify(cp)), APP, 604, rebuild)
+function assertSame(a, b, where) {
+  const k = x => x === 'exit' ? 'exit' : `${x.phase}|${x.k}|${x.stage}|${x.index}|${x.section}`
+  assert.equal(k(b), k(a), `${where}: state`)
+  const N = a.page.words.length
+  for (let id = 0; id < N + 40; id++) assert.equal(flowHidden(b, id), flowHidden(a, id), `${where}: word ${id}`)
+  assert.equal(k(flowAdvance(b)), k(flowAdvance(a)), `${where}: forward`)
+  assert.equal(k(flowBack(b)), k(flowBack(a)), `${where}: back`)
+}
+
+test('checkpoint round-trip on all 604 pages: boundary + random states restore exactly', () => {
+  let checked = 0, maxLen = 0
+  const rnd = (() => { let x = 99; return () => (x = (x * 1103515245 + 12345) >>> 0) / 2 ** 32 })()
+  for (const p of PAGES) {
+    let f = flowFor(p, (rnd() * 2 ** 32) >>> 0)
+    const states = [f]
+    while (f.phase !== 'complete') { f = flowAdvance(f); states.push(f) }
+    const pick = states.filter((s, i) => i === 0 || s.phase !== states[i - 1].phase || s.k !== states[i - 1].k || (s.phase === 'memo' && [0, 4, 7].includes(s.stage)))
+    for (let j = 0; j < 12; j++) pick.push(states[Math.floor(rnd() * states.length)])
+    for (const s of pick) {
+      const cp = cpOf(s, p)
+      maxLen = Math.max(maxLen, JSON.stringify(cp).length)
+      const r = roundTrip(cp)
+      assert.ok(r.ok, `page ${p}: ${r.reason}`)
+      assertSame(s, r.flow, `page ${p} ${s.phase}`)
+      assert.equal(deriveSection(s), s.section)
+      checked++
+    }
+  }
+  console.log(`    checkpoints restored: ${checked}; largest checkpoint ${maxLen} bytes`)
+})
+
+test('page 50: every state of the full workflow restores exactly (including the footer preview)', () => {
+  let f = flowFor(50, 2026), n = 0
+  for (;;) {
+    const r = roundTrip(cpOf(f, 50, n + 1))
+    assert.ok(r.ok, r.reason); assertSame(f, r.flow, `step ${n}`)
+    const pv = f.exercises[f.section].preview
+    if (pv) for (const t of pv.tokens) if (t.role === 'word') assert.equal(flowHidden(r.flow, t.word), flowHidden(f, t.word))
+    n++
+    if (f.phase === 'complete') break
+    f = flowAdvance(f)
+  }
+  assert.equal(n, 328)                       // start + 327 forward steps
+})
+
+test('checkpoint validation rejects corrupt, incompatible and out-of-range data', () => {
+  let f = flowFor(50, 5)
+  for (let i = 0; i < 12; i++) f = flowAdvance(f)            // section 1 recall
+  const good = cpOf(f, 50, 7)
+  assert.ok(roundTrip(good).ok)
+  const resign = c => ({ ...c, sum: checkpointSum(c) })
+  const bad = {
+    'not an object': 'x',
+    'schema version': resign({ ...good, v: CHECKPOINT_VERSION + 1 }),
+    'algorithm version': resign({ ...good, alg: ALG_VERSION + 1 }),
+    'different app': resign({ ...good, app: 'com.noor.quran' }),
+    'checksum mismatch': { ...good, index: good.index + 1 },
+    'bad phase': resign({ ...good, phase: 'reading' }),
+    'bad index': resign({ ...good, index: 1.5 }),
+    'out of range (page)': resign({ ...good, page: 605 }),
+    'fingerprint (wrong page)': resign({ ...good, page: 51 }),
+    'fingerprint (edited)': resign({ ...good, fp: '134:42,61,62' }),
+    'section out of range': resign({ ...good, k: 3 }),
+    'recall invariants': resign({ ...good, index: 500 }),
+    'memo invariants': resign({ ...good, phase: 'memo', index: 3 }),
+    'done invariants': resign({ ...good, phase: 'done', index: 2 }),
+    'final invariants': resign({ ...good, phase: 'final', k: 0, index: 3 }),
+    'complete invariants': resign({ ...good, phase: 'complete', index: 3 }),
+    'missing field': (() => { const c = { ...good }; delete c.seed; return c })(),
+  }
+  for (const [name, c] of Object.entries(bad)) {
+    const r = restoreCheckpoint(typeof c === 'string' ? c : JSON.parse(JSON.stringify(c)), APP, 604, rebuild)
+    assert.equal(r.ok, false, `${name} accepted`)
+  }
+  assert.equal(restoreCheckpoint(null, APP, 604, rebuild).ok, false)
 })

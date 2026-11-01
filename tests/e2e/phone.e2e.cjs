@@ -30,9 +30,16 @@ const check = (name, fn) => fn().then(
   const ev = async (t, src = 1, gap = 430) => { await app.event(t, src); await wait(gap); await app.settle(40) }
   const evB = (t, src = 1) => ev(t, src, 900)   // after crossing a phase/section boundary (800 ms cooldown)
   /** Click a phone control and require a fresh 4-tile G2 render. */
+  /** M1.3: start a lesson through the phone UI, whether the plain button or the saved-lesson card is shown. */
+  const startLessonUI = async () => {
+    if (await p.isVisible('#btnStartLesson')) await p.click('#btnStartLesson')
+    else await p.click('#btnNewLesson')
+    if (await p.isVisible('#lessonConfirmModal')) await p.click('#btnConfirmNewLesson')
+  }
   const click = async sel => {
     const before = await sends()
-    await p.click(sel)
+    if (sel === '#btnStartLesson') await startLessonUI()
+    else await p.click(sel)
     await p.waitForFunction(b => window.__sends >= b + 4, before, { timeout: 10000 })
     await app.settle(40)
   }
@@ -143,7 +150,7 @@ const check = (name, fn) => fn().then(
     assert.equal(await app.eval(() => window.noor.mode), 'reading'); assert.equal(await app.eval(() => window.noor.page), 100)
     assert.ok(!(await p.$eval('#tasteerPanel', e => e.classList.contains('active'))))
     // End button
-    await click('#btnStartLesson'); await click('#lessonPanel .btn-act-end')
+    await click('#btnStartLesson'); await click('#lessonPanel .act-status .btn-act-end')
     assert.equal(await app.eval(() => window.noor.mode), 'reading'); assert.equal(await state(), null)
     // Auto-advance cannot move the page under an active session
     await click('#btnStartLesson'); const before = await app.eval(() => window.noor.page)
@@ -183,7 +190,7 @@ const check = (name, fn) => fn().then(
     await selectPage(77)
     const reading = await app.settle(40)
     await click('#btnStartLesson'); await ev(2)
-    await click('#lessonPanel .btn-act-end')
+    await click('#lessonPanel .act-status .btn-act-end')
     const again = await app.settle(40)
     for (let t = 0; t < 4; t++) assert.ok(reading[t].equals(again[t]), `tile ${t + 1} differs`)
   })

@@ -463,3 +463,114 @@ export function flowProgress(f: Flow): { revealed: number; total: number } {
   if (f.phase === 'done') return { revealed: n, total: n }
   return { revealed: 0, total: n }
 }
+
+// ─── M1.3: session checkpoints ────────────────────────────────────────────────
+//
+// A checkpoint stores only the position in the structured دروس flow. Everything
+// else (page model, exercises, previews, per-section hiding ranks, displayed
+// section) is rebuilt deterministically from the bundled Mushaf data, the
+// session seed and the algorithm below. No Quran text is stored.
+
+/** Checkpoint schema version. */
+export const CHECKPOINT_VERSION = 1
+/**
+ * Hiding-algorithm version: covers mulberry32, hidingOrder, sectionSeed,
+ * hiddenCountAtStage and the exercise/preview rules. Bump it whenever any of
+ * them changes, so an old seed is never replayed with different hidden words.
+ */
+export const ALG_VERSION = 1
+
+const PHASES: FlowPhase[] = ['memo', 'recall', 'done', 'final', 'complete']
+
+export interface Checkpoint {
+  v: number
+  alg: number
+  app: string
+  rev: number
+  savedAt: number
+  active: boolean
+  page: number
+  seed: number
+  k: number
+  phase: FlowPhase
+  stage: number
+  index: number
+  fp: string
+  sum: string
+}
+
+/** Page/exercise fingerprint: page word count and each section exercise's size. */
+export function flowFingerprint(page: MemoPage, exercises: SectionExercise[]): string {
+  return `${page.words.length}:${exercises.map(exerciseCount).join(',')}`
+}
+
+/** FNV-1a 32-bit over the checkpoint fields (accidental-corruption check, not security). */
+export function checkpointSum(c: Omit<Checkpoint, 'sum'>): string {
+  const s = [c.v, c.alg, c.app, c.rev, c.savedAt, c.active ? 1 : 0, c.page, c.seed, c.k, c.phase, c.stage, c.index, c.fp].join('|')
+  let h = 0x811c9dc5
+  for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 0x01000193) >>> 0 }
+  return h.toString(16).padStart(8, '0')
+}
+
+/** Displayed section is derived from the flow position (never stored). */
+export function deriveSection(f: Flow): number {
+  if (f.phase === 'final') return f.index >= 0 ? sectionOfWord(f.page, f.index) : 0
+  if (f.phase === 'complete') return sectionOfWord(f.page, f.page.words.length - 1)
+  return f.k
+}
+
+export function makeCheckpoint(f: Flow, pageNum: number, meta: { app: string; rev: number; savedAt: number; active: boolean }): Checkpoint {
+  const base = {
+    v: CHECKPOINT_VERSION, alg: ALG_VERSION, app: meta.app, rev: meta.rev, savedAt: meta.savedAt,
+    active: meta.active, page: pageNum, seed: f.seed >>> 0, k: f.k, phase: f.phase, stage: f.stage,
+    index: f.index, fp: flowFingerprint(f.page, f.exercises),
+  }
+  return { ...base, sum: checkpointSum(base) }
+}
+
+export type CheckpointResult =
+  | { ok: true; cp: Checkpoint; flow: Flow }
+  | { ok: false; reason: string }
+
+const isInt = (x: unknown): x is number => typeof x === 'number' && Number.isInteger(x)
+
+/**
+ * Validate a parsed checkpoint against the current build and data, and rebuild
+ * the exact flow. `rebuild(page)` must return the page model and exercises
+ * built with the same functions the app uses.
+ */
+export function restoreCheckpoint(
+  raw: unknown, app: string, lastPage: number,
+  rebuild: (page: number) => { page: MemoPage; exercises: SectionExercise[] },
+): CheckpointResult {
+  if (!raw || typeof raw !== 'object') return { ok: false, reason: 'not an object' }
+  const c = raw as Record<string, unknown>
+  if (c.v !== CHECKPOINT_VERSION) return { ok: false, reason: `schema version ${String(c.v)}` }
+  if (c.alg !== ALG_VERSION) return { ok: false, reason: `algorithm version ${String(c.alg)}` }
+  if (c.app !== app) return { ok: false, reason: `different app ${String(c.app)}` }
+  for (const f of ['rev', 'savedAt', 'page', 'seed', 'k', 'stage', 'index'] as const) {
+    if (!isInt(c[f])) return { ok: false, reason: `bad ${f}` }
+  }
+  if (typeof c.active !== 'boolean' || typeof c.fp !== 'string' || typeof c.sum !== 'string') return { ok: false, reason: 'bad field types' }
+  if (!PHASES.includes(c.phase as FlowPhase)) return { ok: false, reason: `bad phase ${String(c.phase)}` }
+  const cp = c as unknown as Checkpoint
+  if (checkpointSum(cp) !== cp.sum) return { ok: false, reason: 'checksum mismatch' }
+  if (cp.rev < 1 || cp.page < 1 || cp.page > lastPage || cp.seed < 0 || cp.seed > 0xFFFFFFFF) return { ok: false, reason: 'out of range' }
+  const { page, exercises } = rebuild(cp.page)
+  if (flowFingerprint(page, exercises) !== cp.fp) return { ok: false, reason: 'page/exercise fingerprint differs' }
+  const K = exercises.length, N = page.words.length
+  if (cp.k < 0 || cp.k >= K) return { ok: false, reason: 'section out of range' }
+  const n = exerciseCount(exercises[cp.k])
+  // Phase-specific invariants (as produced by flowAdvance / flowBack)
+  switch (cp.phase) {
+    case 'memo':     if (cp.stage < 0 || cp.stage > MAX_STAGE || cp.index !== -1) return { ok: false, reason: 'memo invariants' }; break
+    case 'recall':   if (cp.stage !== MAX_STAGE || cp.index < -1 || cp.index > n - 2) return { ok: false, reason: 'recall invariants' }; break
+    case 'done':     if (cp.stage !== MAX_STAGE || cp.index !== n - 1) return { ok: false, reason: 'done invariants' }; break
+    case 'final':    if (cp.stage !== MAX_STAGE || cp.k !== K - 1 || cp.index < -1 || cp.index > N - 2) return { ok: false, reason: 'final invariants' }; break
+    case 'complete': if (cp.stage !== MAX_STAGE || cp.k !== K - 1 || cp.index !== N - 1) return { ok: false, reason: 'complete invariants' }; break
+  }
+  const base = startFlow(page, exercises, cp.seed, 0)
+  const flow: Flow = { ...base, k: cp.k, phase: cp.phase, stage: cp.stage, index: cp.index }
+  flow.section = deriveSection(flow)
+  return { ok: true, cp, flow }
+}

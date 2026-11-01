@@ -537,6 +537,30 @@
       cursor: pointer;
       font-family: inherit;
     }
+    /* ── Saved lesson (M1.3) ────────────────────────────── */
+    .act-saved {
+      margin-top: 10px;
+      padding: 10px 12px;
+      border: 1px solid #2a5a3a;
+      border-radius: 10px;
+      background: #13261c;
+    }
+    .act-saved-title { font-family: 'Amiri', serif; font-weight: 700; color: var(--accent); font-size: 0.98rem; }
+    .act-saved-info { font-size: 0.8rem; color: var(--text); margin-top: 3px; line-height: 1.5; }
+    .act-saved-btns { display: flex; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
+    .act-note {
+      margin-top: 8px;
+      font-size: 0.78rem;
+      color: var(--muted);
+      line-height: 1.5;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .act-note.warn { color: #ffd740; }
+    .act-modal-text { font-size: 0.9rem; color: var(--text); line-height: 1.6; margin-bottom: 18px; }
   </style>
 </head>
 <body>
@@ -611,9 +635,23 @@
       <button class="btn-act-start" id="btnStartLesson" onclick="startLesson()">ابدأ الدرس</button>
     </div>
     <div class="act-desc">تُحفظ الصفحة مقطعًا مقطعًا مع السطر التالي: تختفي الكلمات عبر سبع مراحل، ثم تسطير المقطع، ثم مراجعة الصفحة كاملة. أرقام الآيات تبقى ظاهرة.</div>
+    <div class="act-saved" id="lessonSaved" hidden>
+      <div class="act-saved-title">درس محفوظ</div>
+      <div class="act-saved-info" id="lessonSavedInfo"></div>
+      <div class="act-saved-btns">
+        <button class="btn-act-start" id="btnResumeLesson" onclick="resumeLesson()">متابعة الدرس</button>
+        <button class="btn-act-end" id="btnNewLesson" onclick="startLesson()">بدء درس جديد</button>
+      </div>
+    </div>
+    <div class="act-note" id="lessonCompleteNote" hidden></div>
+    <div class="act-note" id="lessonPrevNote" hidden>
+      <span id="lessonPrevInfo"></span>
+      <button class="btn-act-end" id="btnRecoverPrev" onclick="recoverPrevious()">استعادة</button>
+    </div>
+    <div class="act-note warn" id="lessonInvalidNote" hidden></div>
     <div class="act-status">
       <span id="lessonStatus">المرحلة ٠ من ٧</span>
-      <button class="btn-act-end" onclick="endActivity()">إنهاء</button>
+      <button class="btn-act-end" onclick="endActivity()">إنهاء الدرس</button>
     </div>
   </div>
   <!-- تسطير panel: word-by-word recall -->
@@ -922,12 +960,74 @@ function toggleReadingMode() {
 // normal Even Hub bridge and render queue, and fires 'noor:state' after every
 // state change (including G2 gestures) so these panels stay in sync.
 function arNum(n) { return String(n).replace(/\d/g, function(d) { return String.fromCharCode(0x0660 + Number(d)) }) }
+function describeSaved(sv) {
+  const sec = 'المقطع ' + arNum(sv.k + 1) + '/' + arNum(sv.sectionCount)
+  const where = 'الصفحة ' + arNum(sv.page) + ' · ' + SURAHS[getSurahForPage(sv.page)][1]
+  let what
+  if (sv.phase === 'memo') what = sec + ' · المرحلة ' + arNum(sv.stage) + ' من ٧'
+  else if (sv.phase === 'recall') what = sec + ' · تسطير ' + arNum(sv.revealed) + ' من ' + arNum(sv.total)
+  else if (sv.phase === 'done') what = sec + ' · ✓ اكتمل المقطع'
+  else if (sv.phase === 'final') what = 'مراجعة الصفحة كاملة · ' + arNum(sv.revealed) + ' من ' + arNum(sv.total)
+  else what = '✓ اكتملت الصفحة'
+  return { where: where, what: what }
+}
+/** بدء درس جديد / ابدأ الدرس: confirm before replacing an unfinished saved lesson. */
 function startLesson() {
   if (!window.noor || !window.noor.startLesson) { showToast('Glasses not connected yet'); return }
+  const sv = window.noor.saved
+  const st = window.noor.memo ? window.noor.memo.state : null
+  const live = st && st.activity === 'lesson' && st.phase !== 'complete'
+  if ((sv && !sv.complete) || live) {
+    const d = describeSaved(sv || { page: window.noor.page, k: st.k, sectionCount: st.sectionCount, phase: st.phase, stage: st.stage, revealed: st.revealed, total: st.total })
+    document.getElementById('lessonConfirmText').textContent =
+      'سيُستبدل الدرس المحفوظ (' + d.where + ' · ' + d.what + ') بدرس جديد على ' +
+      'الصفحة ' + arNum(window.noor.page) + '. سيبقى الدرس السابق نسخةً احتياطية يمكن استعادتها.'
+    document.getElementById('lessonConfirmModal').style.display = 'flex'
+    return
+  }
+  doStartLesson()
+}
+function doStartLesson() {
+  document.getElementById('lessonConfirmModal').style.display = 'none'
   if (readingModeActive) stopReadingMode()
   window.noor.startLesson()
   updateActivityPanels()
   showToast('دروس — page ' + window.noor.page)
+}
+function cancelLessonConfirm() {
+  document.getElementById('lessonConfirmModal').style.display = 'none'
+}
+/** متابعة الدرس: restore the exact saved lesson on the G2. */
+function resumeLesson() {
+  if (!window.noor || !window.noor.resumeLesson) { showToast('Glasses not connected yet'); return }
+  if (readingModeActive) stopReadingMode()
+  if (window.noor.resumeLesson()) showToast('متابعة الدرس — page ' + window.noor.page)
+  else showToast('تعذّرت متابعة الدرس')
+  updateNowReading(); updateActivityPanels()
+}
+function recoverPrevious() {
+  if (!window.noor || !window.noor.recoverPrevious) return
+  if (readingModeActive) stopReadingMode()
+  if (window.noor.recoverPrevious()) showToast('استُعيد الدرس السابق')
+  else showToast('تعذّرت استعادة الدرس السابق')
+  updateNowReading(); updateActivityPanels()
+}
+function updateSavedCard(lessonActive) {
+  const sv = window.noor.saved, prev = window.noor.savedPrev, bad = window.noor.savedInvalid
+  const showCard = !lessonActive && !!sv && !sv.complete
+  document.getElementById('lessonSaved').hidden = !showCard
+  document.getElementById('btnStartLesson').hidden = showCard   // the card offers بدء درس جديد instead
+  if (showCard) { const d = describeSaved(sv); document.getElementById('lessonSavedInfo').textContent = d.where + ' · ' + d.what }
+  const showDone = !lessonActive && !!sv && sv.complete
+  const done = document.getElementById('lessonCompleteNote')
+  done.hidden = !showDone
+  if (showDone) done.textContent = '✓ أُكمل درس الصفحة ' + arNum(sv.page) + ' (' + arNum(sv.total) + ' كلمة)'
+  const showPrev = !lessonActive && !!prev && !prev.complete && (!sv || prev.rev !== sv.rev)
+  document.getElementById('lessonPrevNote').hidden = !showPrev
+  if (showPrev) { const d = describeSaved(prev); document.getElementById('lessonPrevInfo').textContent = 'نسخة احتياطية: ' + d.where + ' · ' + d.what }
+  const inv = document.getElementById('lessonInvalidNote')
+  inv.hidden = !bad
+  if (bad) inv.textContent = 'تعذّرت استعادة الدرس المحفوظ لأنه غير متوافق أو تالف. حُفظت نسخة منه للفحص، ويمكنك بدء درس جديد.'
 }
 function startTasteer() {
   if (!window.noor || !window.noor.startTasteer) { showToast('Glasses not connected yet'); return }
@@ -952,6 +1052,7 @@ function updateActivityPanels() {
   const tasteerActive = !!st && st.activity === 'tasteer'
   document.getElementById('lessonPanel').classList.toggle('active', lessonActive)
   document.getElementById('tasteerPanel').classList.toggle('active', tasteerActive)
+  updateSavedCard(lessonActive)
   if (!st) return
   const section = 'المقطع ' + arNum(st.k + 1) + '/' + arNum(st.sectionCount)
   if (lessonActive) {
@@ -995,6 +1096,8 @@ function hideExitDialog() {
 }
 function cancelExit() {
   hideExitDialog()
+  // M1.3: the lesson is already saved after every step; flush once more before reloading
+  try { if (window.noor && window.noor.flushSession) window.noor.flushSession() } catch (_) {}
   // Reload the plugin to recover from frozen glasses JS thread
   showToast('Reloading…')
   setTimeout(function() { window.location.reload() }, 400)
@@ -1031,6 +1134,17 @@ document.addEventListener('backbutton', function(e) {
 }, false)
 </script>
 
+<!-- New-lesson confirmation (M1.3) -->
+<div id="lessonConfirmModal" dir="rtl" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.75);z-index:9998;align-items:center;justify-content:center;">
+  <div style="background:#1a1a1a;border:1px solid #333;border-radius:12px;padding:22px 20px;width:84%;max-width:340px;text-align:right;">
+    <div style="font-family:'Amiri',serif;font-size:1.1rem;font-weight:700;color:#fff;margin-bottom:8px;">بدء درس جديد؟</div>
+    <div class="act-modal-text" id="lessonConfirmText"></div>
+    <div style="display:flex;gap:12px;justify-content:center;">
+      <button id="btnConfirmNewLesson" onclick="doStartLesson()" style="flex:1;padding:10px;border-radius:8px;border:none;background:#00e676;color:#000;font-size:0.9rem;font-weight:700;cursor:pointer;font-family:inherit;">بدء درس جديد</button>
+      <button id="btnCancelNewLesson" onclick="cancelLessonConfirm()" style="flex:1;padding:10px;border-radius:8px;border:1px solid #444;background:#252525;color:#ccc;font-size:0.9rem;cursor:pointer;font-family:inherit;">إلغاء</button>
+    </div>
+  </div>
+</div>
 <!-- Exit Confirmation Modal -->
 <div id="exitModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.75);z-index:9999;align-items:center;justify-content:center;">
   <div style="background:#1a1a1a;border:1px solid #333;border-radius:12px;padding:28px 24px;width:80%;max-width:320px;text-align:center;">

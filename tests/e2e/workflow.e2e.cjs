@@ -55,6 +55,11 @@ const ar = n => String(n).replace(/\d/g, d => String.fromCharCode(0x660 + +d))
     const lay = await app.eval(() => window.noor.memo.layout())
     for (const t of lay) if (t.role === 'word') assert.equal(t.hidden, M.flowHidden(f, t.word), `${where}: main word ${t.word}`)
     assert.ok(lay.filter(t => t.role === 'ayah').every(t => !t.hidden))
+    // M1.3: the saved checkpoint (localStorage, written synchronously) matches this committed step
+    const keys = await app.eval(() => window.noor.sessionKeys)
+    const cp = JSON.parse(await app.eval(k => localStorage.getItem(k), keys.main))
+    assert.deepEqual([cp.page, cp.seed, cp.k, cp.phase, cp.stage, cp.index, cp.active],
+      [await app.eval(() => window.noor.page), f.seed >>> 0, f.k, f.phase, f.stage, f.index, true], `${where}: checkpoint`)
     const pv = await app.eval(() => window.noor.memo.previewLayout())
     const ex = f.exercises[f.section]
     assert.equal(!!pv, !!ex.preview, `${where}: preview presence`)

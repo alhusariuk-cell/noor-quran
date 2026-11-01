@@ -61,6 +61,7 @@ import {
   buildMemoPage, startTasteer, advance as memoAdvanceState, back as memoBackState,
   nextSection as memoNextSectionState, isWordHidden, revealedCount, MAX_STAGE,
   buildExercises, startFlow, flowAdvance, flowBack, flowHidden, flowProgress,
+  makeCheckpoint, restoreCheckpoint, type Checkpoint,
   type MemoSession, type MemoPage, type Activity, type Flow, type SectionExercise, type PreviewModel,
 } from './memorisation'
 
@@ -913,6 +914,224 @@ function logMemo(action: string): void {
     `stage=${st.stage} progress=${st.revealed}/${st.total} view=${st.section + 1}`)
 }
 
+// ─── M1.3: session persistence (structured دروس only) ─────────────────────────
+//
+// One saved lesson (+ one backup slot), stored in BOTH WebView localStorage
+// (synchronous, immediate) and Even bridge storage (asynchronous, ordered).
+// On launch the app stays in Reading Mode; the phone offers متابعة الدرس.
+// Standalone تسطير is never saved here.
+declare const __NOOR_APP_ID__: string
+const APP_ID: string = typeof __NOOR_APP_ID__ === 'string' ? __NOOR_APP_ID__ : 'com.noor.quran'
+const SESSION_KEY         = `${APP_ID}:memo.session.v1`
+const SESSION_PREV_KEY    = `${SESSION_KEY}.prev`
+const SESSION_INVALID_KEY = `${SESSION_KEY}.invalid`
+const BRIDGE_READ_TIMEOUT_MS = 1500
+
+let savedMain: Checkpoint | null = null       // newest valid saved lesson
+let savedPrev: Checkpoint | null = null       // backup slot (lesson replaced by a new one)
+let savedInvalid: string | null = null        // reason, when a stored lesson could not be restored
+let lastRev = 0                               // highest revision seen; every save uses lastRev + 1
+let sessionLoaded = false
+
+function rebuildForPage(p: number): { page: MemoPage; exercises: SectionExercise[] } {
+  const page = buildMemoPage(getPage(p).lines)
+  return { page, exercises: buildExercises(n => getPage(n).lines, page, p, TOTAL_PAGES) }
+}
+
+// Bridge writes are asynchronous. A single runner writes one key at a time,
+// in order, and coalesces: while a write is in flight, newer values for the
+// same key replace older pending ones. The last value written for a key is
+// therefore always the newest — an older write can never land after a newer one.
+const bridgePending = new Map<string, string>()
+let bridgeRunning = false
+let bridgeWrites = 0
+async function runBridgeQueue(): Promise<void> {
+  if (bridgeRunning) return
+  bridgeRunning = true
+  try {
+    while (bridgePending.size > 0) {
+      const [key, value] = bridgePending.entries().next().value as [string, string]
+      bridgePending.delete(key)
+      try {
+        const b = await getBridge()
+        const ok = b.setLocalStorage ? await b.setLocalStorage(key, value) : false
+        bridgeWrites++
+        if (!ok) console.warn(`[Noor][session] bridge write not confirmed for ${key}`)
+      } catch (e) { console.warn('[Noor][session] bridge write failed:', e) }
+    }
+  } finally { bridgeRunning = false }
+}
+function storeWrite(key: string, value: string): void {
+  try { localStorage.setItem(key, value) } catch (e) { console.warn('[Noor][session] localStorage write failed:', e) }
+  bridgePending.delete(key)
+  bridgePending.set(key, value)
+  void runBridgeQueue()
+}
+
+/** Phone-facing summary of a checkpoint (no Quran text). */
+function summarise(cp: Checkpoint | null) {
+  if (!cp) return null
+  const r = restoreCheckpoint(cp, APP_ID, TOTAL_PAGES, rebuildForPage)
+  if (!r.ok) return null
+  const f = r.flow, pr = flowProgress(f)
+  return { page: cp.page, k: f.k, sectionCount: f.page.sectionCount, phase: f.phase, stage: f.stage,
+    revealed: pr.revealed, total: pr.total, active: cp.active, complete: f.phase === 'complete',
+    savedAt: cp.savedAt, rev: cp.rev, seed: cp.seed }
+}
+
+/**
+ * Checkpoint the in-memory lesson: build, validate against a fresh rebuild,
+ * write localStorage synchronously, queue the bridge write. Called after every
+ * committed transition, before rendering.
+ */
+function saveSession(active: boolean, why: string): void {
+  if (!memo || memo.kind !== 'lesson') return
+  const cp = makeCheckpoint(memo.flow, currentPage, { app: APP_ID, rev: lastRev + 1, savedAt: Date.now(), active })
+  const check = restoreCheckpoint(JSON.parse(JSON.stringify(cp)), APP_ID, TOTAL_PAGES, rebuildForPage)
+  if (!check.ok) { console.error(`[Noor][session] refusing to save invalid checkpoint (${check.reason})`); return }
+  lastRev = cp.rev
+  savedMain = cp
+  savedInvalid = null
+  storeWrite(SESSION_KEY, JSON.stringify(cp))
+  console.log(`[Noor][session] saved rev=${cp.rev} (${why}) page=${cp.page} ${cp.phase} k=${cp.k} stage=${cp.stage} index=${cp.index} active=${cp.active}`)
+}
+
+/** Lifecycle flush: re-save the current lesson position (same state, newer revision). */
+function flushSession(why: string): void {
+  if (memo && memo.kind === 'lesson') saveSession(true, why)
+}
+
+async function readBridge(key: string): Promise<string> {
+  try {
+    const b = await getBridge()
+    if (!b.getLocalStorage) return ''
+    const v = await Promise.race([b.getLocalStorage(key), delay(BRIDGE_READ_TIMEOUT_MS).then(() => '')])
+    return typeof v === 'string' ? v : ''
+  } catch (_) { return '' }
+}
+function readLocal(key: string): string {
+  try { return localStorage.getItem(key) ?? '' } catch (_) { return '' }
+}
+
+/** Parse + validate stored values; the valid one with the highest revision wins. */
+function pickNewest(values: { source: string; raw: string }[]): { best: Checkpoint | null; invalid: { source: string; raw: string; reason: string }[]; maxRev: number } {
+  let best: Checkpoint | null = null, maxRev = 0
+  const invalid: { source: string; raw: string; reason: string }[] = []
+  for (const { source, raw } of values) {
+    if (!raw) continue
+    let parsed: unknown
+    try { parsed = JSON.parse(raw) } catch (_) { invalid.push({ source, raw, reason: 'corrupt JSON' }); continue }
+    const r = restoreCheckpoint(parsed, APP_ID, TOTAL_PAGES, rebuildForPage)
+    if (!r.ok) { invalid.push({ source, raw, reason: r.reason }); continue }
+    maxRev = Math.max(maxRev, r.cp.rev)
+    if (!best || r.cp.rev > best.rev) best = r.cp
+  }
+  return { best, invalid, maxRev }
+}
+
+/** Startup: read both stores (independently of the launch-source callback). Never throws. */
+async function loadSavedSessions(): Promise<void> {
+  try {
+    const [bMain, bPrev] = await Promise.all([readBridge(SESSION_KEY), readBridge(SESSION_PREV_KEY)])
+    const main = pickNewest([{ source: 'localStorage', raw: readLocal(SESSION_KEY) }, { source: 'bridge', raw: bMain }])
+    const prev = pickNewest([{ source: 'localStorage', raw: readLocal(SESSION_PREV_KEY) }, { source: 'bridge', raw: bPrev }])
+    lastRev = Math.max(lastRev, main.maxRev, prev.maxRev)
+    if (memo && memo.kind === 'lesson') {
+      // A lesson was started before loading finished: keep the stored unfinished
+      // lesson as the backup, then re-save the live one above every stored revision.
+      if (main.best && main.best.phase !== 'complete' && main.best.seed !== memo.flow.seed) {
+        savedPrev = main.best
+        storeWrite(SESSION_PREV_KEY, JSON.stringify(main.best))
+      } else if (prev.best) savedPrev = prev.best
+      saveSession(true, 'resave after load')
+    } else {
+      savedMain = main.best
+      savedPrev = prev.best
+    }
+    if (main.invalid.length > 0) {
+      // Keep a copy for diagnosis instead of silently discarding it
+      const bad = main.invalid[0]
+      storeWrite(SESSION_INVALID_KEY, JSON.stringify({ quarantinedAt: Date.now(), source: bad.source, reason: bad.reason, raw: bad.raw }))
+      if (!main.best) savedInvalid = bad.reason
+      console.warn(`[Noor][session] stored lesson rejected (${bad.source}): ${bad.reason}`)
+    }
+    console.log(`[Noor][session] loaded: main=${savedMain ? `rev ${savedMain.rev} page ${savedMain.page} ${savedMain.phase}` : 'none'} ` +
+      `prev=${savedPrev ? `rev ${savedPrev.rev}` : 'none'} invalid=${main.invalid.length}`)
+  } catch (e) {
+    console.warn('[Noor][session] load failed:', e)
+  }
+  sessionLoaded = true
+  try { window.dispatchEvent(new CustomEvent('noor:state')) } catch (_) {}
+}
+
+/** Show a validated checkpoint as the active lesson on the G2. */
+function enterRestored(cp: Checkpoint): boolean {
+  const r = restoreCheckpoint(cp, APP_ID, TOTAL_PAGES, rebuildForPage)
+  if (!r.ok) { savedInvalid = r.reason; return false }
+  if (memo && memo.kind === 'lesson') saveSession(false, 'replaced by resume')
+  currentPage = cp.page
+  memo = { kind: 'lesson', flow: r.flow }
+  currentScreen = r.flow.section
+  mode = 'memo'
+  lastNavTime = {}
+  boundaryUntil = {}
+  saveSession(true, 'resume')
+  saveBookmark()
+  renderMemoView()
+  return true
+}
+
+/** متابعة الدرس: restore the saved lesson exactly (not offered once COMPLETE). */
+function resumeLesson(): boolean {
+  if (!savedMain || savedMain.phase === 'complete') return false
+  return enterRestored(savedMain)
+}
+
+/** Restore the backup slot; the lesson it replaces becomes the new backup (nothing is lost). */
+function recoverPrevious(): boolean {
+  if (!savedPrev || savedPrev.phase === 'complete') return false
+  const backup = savedPrev
+  if (memo && memo.kind === 'lesson') saveSession(false, 'before recovering backup')
+  if (savedMain && savedMain.phase !== 'complete' && savedMain.rev !== backup.rev) {
+    savedPrev = savedMain
+    storeWrite(SESSION_PREV_KEY, JSON.stringify(savedMain))
+  }
+  return enterRestored(backup)
+}
+
+/** Before a new lesson replaces an unfinished saved one, keep it in the backup slot. */
+function backupBeforeNewLesson(): void {
+  if (memo && memo.kind === 'lesson') saveSession(false, 'replaced by new lesson')
+  if (savedMain && savedMain.phase !== 'complete') {
+    savedPrev = savedMain
+    storeWrite(SESSION_PREV_KEY, JSON.stringify(savedMain))
+  }
+}
+
+/** G2 / app lifecycle: flush at boundaries; register each handler once. */
+let lifecycleHooked = false
+function hookLifecycle(bridge: any): void {
+  if (lifecycleHooked) return
+  lifecycleHooked = true
+  window.addEventListener('pagehide', () => flushSession('pagehide'))
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') flushSession('hidden') })
+  try {
+    let wasDisconnected = false
+    bridge.onDeviceStatusChanged?.((status: any) => {
+      const t = String(status?.connectType ?? '')
+      if (t === 'disconnected' || t === 'connectionFailed') {
+        wasDisconnected = true
+        flushSession(`G2 ${t}`)
+      } else if (t === 'connected' && wasDisconnected) {
+        wasDisconnected = false
+        console.log('[Noor][session] G2 reconnected — re-rendering')
+        _displayDirty = true
+        setTimeout(() => resumeRender(), 600)
+      }
+    })
+  } catch (e) { console.warn('[Noor][session] device status hook unavailable:', e) }
+}
+
 /**
  * Start a fresh session on the current page. Always builds new state (new seed,
  * stage 0 / recall 0, cleared debounce and cooldowns), so nothing carries over
@@ -921,6 +1140,9 @@ function logMemo(action: string): void {
  *   'tasteer' (تسطير): page-wide recall with every eligible word hidden, first section
  */
 function startActivity(activity: Activity, seed?: number, section = 0): void {
+  // Keep any running lesson; a new lesson moves an unfinished saved one to the backup slot
+  if (activity === 'lesson') backupBeforeNewLesson()
+  else if (memo && memo.kind === 'lesson') saveSession(false, 'switched to standalone تسطير')
   const page = buildMemoPage(getPage(currentPage).lines)
   const exercises = buildExercises(n => getPage(n).lines, page, currentPage, TOTAL_PAGES)
   const sessionSeed = (seed ?? (Date.now() ^ (currentPage * 2654435761))) >>> 0
@@ -932,6 +1154,7 @@ function startActivity(activity: Activity, seed?: number, section = 0): void {
   boundaryUntil = {}
   console.log(`[Noor][memo] start activity=${activity} page=${currentPage} seed=${sessionSeed} ` +
     `words=${page.words.length} sections=${page.sectionCount}`)
+  if (activity === 'lesson') saveSession(true, 'new lesson')
   renderMemoView()
 }
 
@@ -941,6 +1164,7 @@ function startMemo(seed?: number): void {
 }
 
 function exitMemo(): void {
+  saveSession(false, 'exit to Reading')          // إنهاء الدرس keeps the checkpoint (paused)
   if (memo) currentScreen = sessionSection(memo)
   memo = null
   mode = 'reading'
@@ -963,11 +1187,13 @@ function stepMemo(dir: 'advance' | 'back'): 'moved' | 'exit' | 'none' {
       const next = flowAdvance(memo.flow)
       if (next === memo.flow) return 'none'
       memo = { kind: 'lesson', flow: next }
+      saveSession(true, 'advance')
       return 'moved'
     }
     const r = flowBack(memo.flow)
     if (r === 'exit') return 'exit'
     memo = { kind: 'lesson', flow: r }
+    saveSession(true, 'back')
     return 'moved'
   }
   if (dir === 'advance') { memo = { ...memo, s: memoAdvanceState(memo.s) }; return 'moved' }
@@ -1153,6 +1379,11 @@ async function setupNavigation(): Promise<void> {
           setTimeout(() => resumeRender(), 900)
         }, 600)
         break
+      case 5: case 6: case 7:
+        // FOREGROUND_EXIT / ABNORMAL_EXIT / SYSTEM_EXIT: persist the committed lesson position.
+        // localStorage is written synchronously; the bridge write may not finish if the app is killed.
+        flushSession(`lifecycle event ${eventType}`)
+        break
       default:
         console.log('[Noor] Unhandled event type:', eventType)
     }
@@ -1196,6 +1427,11 @@ async function main(): Promise<void> {
   try {
     console.log('[Noor] Starting v4.6.35 (full rendering, MUSHAF_DATA bundle, G2)…')
     const bridge = await getBridge()
+
+    // M1.3: read saved lessons independently of the launch-source callback;
+    // the app stays in Reading Mode and the phone offers متابعة الدرس.
+    void loadSavedSessions()
+    hookLifecycle(bridge)
 
     // Wait for launch source or timeout
     await new Promise<void>((resolve) => {
@@ -1257,11 +1493,13 @@ main()
 ;(window as any).noor = {
   jumpToPage: (n: number) => {
     currentPage = Math.max(1, Math.min(TOTAL_PAGES, n))
+    saveSession(false, 'page jump')
     currentScreen = 0; currentSurahNum = 0; mode = 'reading'; memo = null; saveBookmark(); renderReadingView()
   },
   jumpToSurah: (n: number) => {
     const s = SURAHS.find(([num]) => num === n)
     if (!s) return
+    saveSession(false, 'surah jump')
     currentPage = s[2]; currentSurahNum = n; mode = 'reading'; memo = null
     const pageData = getPage(s[2])
     currentScreen = screenForSurahHeader(pageData.lines, n)
@@ -1295,6 +1533,18 @@ main()
   startLesson:  (seed?: number) => startActivity('lesson', seed, 0),
   startTasteer: (seed?: number) => startActivity('tasteer', seed, 0),
   endActivity:  () => { if (mode === 'memo') exitMemo() },
+  /** M1.3 saved lesson: phone card data, resume, backup recovery, flush. */
+  resumeLesson:    () => resumeLesson(),
+  recoverPrevious: () => recoverPrevious(),
+  flushSession:    () => flushSession('phone'),
+  get saved()        { return summarise(savedMain) },
+  get savedPrev()    { return summarise(savedPrev) },
+  get savedInvalid() { return savedInvalid },
+  get sessionLoaded() { return sessionLoaded },
+  /** Test hooks: storage keys and bridge-write counter. */
+  get sessionKeys()  { return { main: SESSION_KEY, prev: SESSION_PREV_KEY, invalid: SESSION_INVALID_KEY } },
+  get bridgeWrites() { return bridgeWrites },
+  get bridgeIdle()   { return !bridgeRunning && bridgePending.size === 0 },
   memo: {
     /** Test hook: structured دروس flow starting at the current screen's section. */
     start: (seed?: number) => startActivity('lesson', seed, currentScreen),
@@ -1302,6 +1552,8 @@ main()
     advance: () => { if (stepMemo('advance') === 'moved') renderMemoView() },
     back: () => { const r = stepMemo('back'); if (r === 'exit') exitMemo(); else if (r === 'moved') renderMemoView() },
     tap: () => memoTap(),
+    /** Test hook: render the current memorisation state now (used before capturing tiles). */
+    redraw: () => { if (memo) renderMemoView() },
     /** The preview line shown for the displayed section (for automated checks). */
     preview: () => { const pv = memo && sessionPreview(memo); return pv && { page: pv.page, line: pv.line, text: pv.text } },
     /** Token boxes of the displayed section (for automated pixel checks). */

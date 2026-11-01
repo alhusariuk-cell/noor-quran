@@ -28,7 +28,12 @@ function serve(dir) {
   })
 }
 
-async function openApp(distDir, { logs = false, offline = false } = {}) {
+/**
+ * bridge: { store: {key: value}, mode: 'ok' | 'fail' | 'empty', delayMs: number | () => number }
+ * The store lives in Node, so it survives page reloads and can be shared with a
+ * new browser (simulating lost WebView storage). Mutate `mode`/`delayMs` between steps.
+ */
+async function openApp(distDir, { logs = false, offline = false, bridge = { store: {}, mode: 'ok', delayMs: 0 } } = {}) {
   const srv = await serve(distDir)
   const browser = await chromium.launch()
   const page = await browser.newPage()
@@ -43,6 +48,17 @@ async function openApp(distDir, { logs = false, offline = false } = {}) {
     })
   }
   page.on('console', m => { consoleLines.push(m.text()); if (logs) console.log('  [app]', m.text().slice(0, 200)) })
+  // Bridge storage (setLocalStorage / getLocalStorage), backed by bridge.store in Node
+  await page.exposeBinding('__bridgeSet', async (_src, key, value) => {
+    const d = typeof bridge.delayMs === 'function' ? bridge.delayMs() : (bridge.delayMs || 0)
+    if (d) await new Promise(r => setTimeout(r, d))
+    if (bridge.mode === 'fail') return false
+    bridge.store[key] = value
+    if (bridge.log) bridge.log.push([key, value])
+    return true
+  })
+  await page.exposeBinding('__bridgeGet', async (_src, key) =>
+    bridge.mode === 'ok' && Object.prototype.hasOwnProperty.call(bridge.store, key) ? bridge.store[key] : '')
   await page.addInitScript(() => {
     window.__tiles = {}; window.__sends = 0; window.__calls = []
     window.flutter_inappwebview = {
@@ -54,17 +70,26 @@ async function openApp(distDir, { logs = false, offline = false } = {}) {
             window.__tiles[msg.data.containerID] = msg.data.imageData
             window.__sends++
           }
+          if (msg.method === 'setLocalStorage') return window.__bridgeSet(msg.data.key, msg.data.value)
+          if (msg.method === 'getLocalStorage') return window.__bridgeGet(msg.data.key)
         } catch (_) {}
         return Promise.resolve(0)
       },
     }
   })
+  const ready = async () => {
+    await page.waitForFunction(() => window.__sends >= 4 && window.noor, null, { timeout: 15000 })
+    await page.waitForTimeout(2300)   // let the app's start-up re-renders (0.9 s, 2 s) finish
+  }
   await page.goto(`http://127.0.0.1:${srv.address().port}/index.html`)
-  await page.waitForFunction(() => window.__sends >= 4 && window.noor, null, { timeout: 15000 })
-  await page.waitForTimeout(2300)   // let the app's start-up re-renders (0.9 s, 2 s) finish
+  await ready()
 
   const app = {
-    page, consoleLines, blocked,
+    page, consoleLines, blocked, bridge,
+    /** Close and reopen the app (WebView reload): localStorage and bridge storage survive. */
+    async reload() { await page.reload(); await ready() },
+    /** Wait for the app to finish starting after a reload it triggered itself. */
+    waitReady: ready,
     /** Wait until no tile has been sent for `quietMs`, then return the 4 tiles as Buffers. */
     async settle(quietMs = 120) {
       let last = -1
