@@ -2,6 +2,8 @@
  * End-to-end checks of a built bundle through a mock Even Hub host.
  *
  *   node tests/e2e/memo.e2e.cjs <dist> [<reference v4.7.0 dist>] [--pages=all|sample]
+ *        [--range=FROM-TO] [--only=1,2,...]
+ *   (--range limits the page set for checks 1–2; --only runs selected checks)
  *
  * 1. Reading Mode regression: every screen of every page renders byte-identical
  *    tiles to the reference build (when a reference dist is given).
@@ -20,9 +22,13 @@ const assert = require('assert')
 
 const [dist, refDist] = process.argv.slice(2).filter(a => !a.startsWith('--'))
 const sample = process.argv.includes('--pages=sample')
-const PAGES = sample
+const arg = name => (process.argv.find(a => a.startsWith(`--${name}=`)) || '').split('=')[1]
+const range = (arg('range') || '1-604').split('-').map(Number)
+const only = arg('only') ? new Set(arg('only').split(',').map(Number)) : null
+const run = n => !only || only.has(n)
+const PAGES = (sample
   ? [1, 2, 3, 50, 77, 151, 187, 255, 293, 300, 302, 400, 500, 586, 590, 600, 603, 604]
-  : Array.from({ length: 604 }, (_, i) => i + 1)
+  : Array.from({ length: 604 }, (_, i) => i + 1)).filter(p => p >= range[0] && p <= range[1])
 const wait = ms => new Promise(r => setTimeout(r, ms))
 let failures = 0
 const check = (name, fn) => fn().then(
@@ -77,7 +83,7 @@ async function footerInkColumns(app, png) {
   const app = await openApp(dist)
 
   // ── 1. Reading Mode regression against v4.7.0 ──────────────────────────────
-  if (refDist) {
+  if (refDist && run(1)) {
     await check(`Reading Mode tiles byte-identical to v4.7.0 (${PAGES.length} pages, every screen)`, async () => {
       const ref = await openApp(refDist)
       let screens = 0
@@ -101,7 +107,7 @@ async function footerInkColumns(app, png) {
   }
 
   // ── 2. Stage 0 equals Reading text area; exit returns to the same screen ───
-  await check(`Memorisation stage 0 text area identical to Reading (${PAGES.length} pages, every screen)`, async () => {
+  if (run(2)) await check(`Memorisation stage 0 text area identical to Reading (${PAGES.length} pages, every screen)`, async () => {
     let screens = 0
     for (const p of PAGES) {
       await app.render(p => window.noor.jumpToPage(p), p)
@@ -128,7 +134,7 @@ async function footerInkColumns(app, png) {
   })
 
   // ── 3. Real SDK events ──────────────────────────────────────────────────────
-  await check('SDK event routing: selector entry, stages, sections, recall, exit, double press', async () => {
+  if (run(3)) await check('SDK event routing: selector entry, stages, sections, recall, exit, double press', async () => {
     const st = () => app.eval(() => window.noor.memo.state)
     const ev = async (t, src = 1) => { await app.event(t, src); await wait(430); await app.settle(40) }
     for (const [p, sections] of [[1, 2], [586, 3], [604, 3]]) {
@@ -164,7 +170,7 @@ async function footerInkColumns(app, png) {
   })
 
   // ── 4. Placeholders change only word pixels ─────────────────────────────────
-  await check('Stage 7: ayah markers, header and basmala pixel-identical; hidden words replaced by placeholders', async () => {
+  if (run(4)) await check('Stage 7: ayah markers, header and basmala pixel-identical; hidden words replaced by placeholders', async () => {
     let markers = 0, hiddenWords = 0
     for (const p of [2, 50, 187, 302, 586, 604]) {
       await app.render(p => window.noor.jumpToPage(p), p)
@@ -230,7 +236,7 @@ async function footerInkColumns(app, png) {
   })
 
   // ── 5. Footer collisions ────────────────────────────────────────────────────
-  await check('Footer: three separate columns in memorisation and recall (incl. 3-digit counts)', async () => {
+  if (run(5)) await check('Footer: three separate columns in memorisation and recall (incl. 3-digit counts)', async () => {
     for (const p of [1, 302, 604, 249]) {
       await app.render(p => window.noor.jumpToPage(p), p)
       await app.render(() => window.noor.memo.start(5))
