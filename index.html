@@ -560,6 +560,8 @@
       flex-wrap: wrap;
     }
     .act-note.warn { color: #ffd740; }
+    /* display rules above would otherwise override the hidden attribute */
+    .act-saved[hidden], .act-note[hidden], .btn-act-start[hidden] { display: none !important; }
     .act-modal-text { font-size: 0.9rem; color: var(--text); line-height: 1.6; margin-bottom: 18px; }
   </style>
 </head>

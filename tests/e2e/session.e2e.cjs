@@ -42,6 +42,8 @@ const check = (name, fn) => fn().then(
   const idle = () => app.page.waitForFunction(() => window.noor.bridgeIdle, null, { timeout: 10000 })
   const local = async k => { const v = await app.eval(k => localStorage.getItem(k), k); return v ? JSON.parse(v) : null }
   const fromBridge = k => bridge.store[k] ? JSON.parse(bridge.store[k]) : null
+  /** Strict visibility: the element is laid out (not display:none) and not hidden. */
+  const shown = sel => app.eval(sel => { const e = document.querySelector(sel); return !!e && !e.hidden && getComputedStyle(e).display !== 'none' }, sel)
   const start = async (page, seed) => {
     await app.render(p => window.noor.jumpToPage(p), page)
     await app.render(s => window.noor.startLesson(s), seed)
@@ -109,6 +111,12 @@ const check = (name, fn) => fn().then(
   }
   const sign = c => ({ ...c, sum: M.checkpointSum(c) })
 
+  await check('Phone notes are not shown when there is nothing to show (no stray buttons)', async () => {
+    await app.page.waitForFunction(() => window.noor.sessionLoaded)
+    for (const sel of ['#lessonSaved', '#lessonPrevNote', '#lessonCompleteNote', '#lessonInvalidNote']) assert.ok(!(await shown(sel)), `${sel} shown`)
+    assert.ok(await shown('#btnStartLesson'))
+  })
+
   // ── 1–4, 7: stages 0/4/7, section recall, DONE, next-section transition (WebView reload) ──
   await check('Interrupt by WebView reload at stages 0, 4, 7, section تسطير, DONE and next section: exact restore', async () => {
     for (const [label, t] of [['stage 0', { phase: 'memo', k: 0, stage: 0 }], ['stage 4', { phase: 'memo', k: 0, stage: 4 }],
@@ -139,7 +147,9 @@ const check = (name, fn) => fn().then(
     await interruptReload()
     await app.page.waitForFunction(() => window.noor.sessionLoaded)
     assert.equal(await app.eval(() => window.noor.mode), 'reading')
-    assert.ok(await app.page.isHidden('#lessonSaved'))
+    assert.ok(!(await shown('#lessonSaved')))
+    assert.ok(!(await shown('#lessonPrevNote')) || (await app.eval(() => window.noor.savedPrev)) !== null)
+    assert.ok(await shown('#lessonCompleteNote'))
     assert.match(await app.page.textContent('#lessonCompleteNote'), /✓ أُكمل درس الصفحة ٥٠/)
     assert.equal(await app.eval(() => window.noor.resumeLesson()), false)
     assert.equal((await app.eval(() => window.noor.saved)).complete, true)
@@ -179,7 +189,7 @@ const check = (name, fn) => fn().then(
       assert.equal(await app.eval(() => window.noor.mode), 'reading', name)
       assert.equal(await app.eval(() => window.noor.saved), null, name)
       assert.ok(await app.eval(() => window.noor.savedInvalid), `${name}: no reason`)
-      assert.ok(await app.page.isVisible('#lessonInvalidNote'), `${name}: no notice`)
+      assert.ok(await shown('#lessonInvalidNote'), `${name}: no notice`)
       await idle()
       const q = JSON.parse(await app.eval(k => localStorage.getItem(k), keys.invalid))
       assert.equal(q.raw, raw, `${name}: not quarantined`)
@@ -234,7 +244,7 @@ const check = (name, fn) => fn().then(
     await app.render(() => window.noor.memo.advance())                    // new lesson at stage 1
     const B = await st()
     await interruptReload(); await app.page.waitForFunction(() => window.noor.sessionLoaded)
-    assert.ok(await app.page.isVisible('#lessonPrevNote'))
+    assert.ok(await shown('#lessonPrevNote'))
     const b = await app.eval(() => window.__sends)
     await app.page.click('#btnRecoverPrev'); await app.page.waitForFunction(b => window.__sends >= b + 4, b)
     const after = await capture()
