@@ -28,11 +28,20 @@ function serve(dir) {
   })
 }
 
-async function openApp(distDir, { logs = false } = {}) {
+async function openApp(distDir, { logs = false, offline = false } = {}) {
   const srv = await serve(distDir)
   const browser = await chromium.launch()
   const page = await browser.newPage()
   const consoleLines = []
+  const blocked = []
+  if (offline) {
+    // Simulate no internet: only the local app server is reachable
+    await page.route('**/*', route => {
+      const u = route.request().url()
+      if (u.startsWith('http://127.0.0.1:')) return route.continue()
+      blocked.push(u); return route.abort('internetdisconnected')
+    })
+  }
   page.on('console', m => { consoleLines.push(m.text()); if (logs) console.log('  [app]', m.text().slice(0, 200)) })
   await page.addInitScript(() => {
     window.__tiles = {}; window.__sends = 0; window.__calls = []
@@ -55,7 +64,7 @@ async function openApp(distDir, { logs = false } = {}) {
   await page.waitForTimeout(2300)   // let the app's start-up re-renders (0.9 s, 2 s) finish
 
   const app = {
-    page, consoleLines,
+    page, consoleLines, blocked,
     /** Wait until no tile has been sent for `quietMs`, then return the 4 tiles as Buffers. */
     async settle(quietMs = 120) {
       let last = -1

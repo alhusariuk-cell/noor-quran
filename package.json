@@ -9,7 +9,7 @@
     "preview": "vite preview",
     "simulator": "evenhub-simulator http://localhost:5173",
     "test": "node --no-warnings --test tests/*.test.mjs",
-    "test:e2e": "node tests/e2e/memo.e2e.cjs dist"
+    "test:e2e": "node tests/e2e/memo.e2e.cjs dist && node tests/e2e/phone.e2e.cjs dist"
   },
   "dependencies": {
     "@evenrealities/even_hub_sdk": "latest",

@@ -452,6 +452,91 @@
       display: none;
     }
     .reading-mode-panel.active .rm-countdown { display: block; }
+    /* ── Learning activity panels (دروس / تسطير) ────────── */
+    .activity-panel {
+      margin: 8px 16px 0;
+      padding: 12px 14px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      direction: rtl;
+    }
+    .activity-panel.active {
+      border-color: var(--accent2);
+      background: #0f2420;
+    }
+    .act-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+    }
+    .act-title {
+      font-family: 'Amiri', serif;
+      font-size: 1.05rem;
+      font-weight: 700;
+      color: var(--text);
+    }
+    .act-title small {
+      font-size: 0.85rem;
+      font-weight: 400;
+      color: var(--muted);
+    }
+    .activity-panel.active .act-title { color: var(--accent2); }
+    .act-page {
+      font-size: 0.75rem;
+      color: var(--muted);
+      margin-top: 2px;
+    }
+    .act-desc {
+      font-size: 0.78rem;
+      color: var(--muted);
+      margin-top: 8px;
+      line-height: 1.5;
+    }
+    .btn-act-start {
+      padding: 7px 14px;
+      border-radius: 8px;
+      font-size: 0.85rem;
+      font-weight: 700;
+      cursor: pointer;
+      white-space: nowrap;
+      transition: opacity 0.15s;
+      background: #1e3a2a;
+      color: var(--accent);
+      border: 1px solid #2a5a3a;
+      font-family: inherit;
+    }
+    .btn-act-start:active { opacity: 0.7; }
+    .act-status {
+      display: none;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      margin-top: 10px;
+      padding-top: 10px;
+      border-top: 1px solid var(--border);
+      font-size: 0.8rem;
+      color: var(--accent2);
+    }
+    .activity-panel.active .act-status { display: flex; }
+    .act-dots { display: inline-flex; gap: 4px; direction: rtl; vertical-align: middle; margin-inline-start: 6px; }
+    .act-dot {
+      width: 8px; height: 8px;
+      border-radius: 50%;
+      border: 1px solid var(--accent2);
+    }
+    .act-dot.on { background: var(--accent2); }
+    .btn-act-end {
+      padding: 4px 10px;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      background: var(--surface);
+      color: var(--muted);
+      font-size: 0.75rem;
+      cursor: pointer;
+      font-family: inherit;
+    }
   </style>
 </head>
 <body>
@@ -515,6 +600,36 @@
       <div class="rm-progress-bar" id="rmProgressBar"></div>
     </div>
     <div class="rm-countdown" id="rmCountdown">Next tile in 25s</div>
+  </div>
+  <!-- دروس panel: seven-stage progressive hiding -->
+  <div class="activity-panel" id="lessonPanel">
+    <div class="act-header">
+      <div>
+        <div class="act-title">دروس <small>— الحفظ التدريجي</small></div>
+        <div class="act-page" id="lessonPage">الصفحة —</div>
+      </div>
+      <button class="btn-act-start" id="btnStartLesson" onclick="startLesson()">ابدأ الدرس</button>
+    </div>
+    <div class="act-desc">تختفي الكلمات تدريجيًا عبر سبع مراحل حتى تُخفى الصفحة كاملة، مع بقاء أرقام الآيات ظاهرة.</div>
+    <div class="act-status">
+      <span id="lessonStatus">المرحلة ٠ من ٧</span>
+      <button class="btn-act-end" onclick="endActivity()">إنهاء</button>
+    </div>
+  </div>
+  <!-- تسطير panel: word-by-word recall -->
+  <div class="activity-panel" id="tasteerPanel">
+    <div class="act-header">
+      <div>
+        <div class="act-title">تسطير <small>— التسميع كلمة بكلمة</small></div>
+        <div class="act-page" id="tasteerPage">الصفحة —</div>
+      </div>
+      <button class="btn-act-start" id="btnStartTasteer" onclick="startTasteer()">ابدأ التسطير</button>
+    </div>
+    <div class="act-desc">تبدأ الصفحة مخفية، ثم تظهر الكلمات واحدة تلو الأخرى بترتيب التلاوة.</div>
+    <div class="act-status">
+      <span id="tasteerStatus">ظهرت ٠ كلمة</span>
+      <button class="btn-act-end" onclick="endActivity()">إنهاء</button>
+    </div>
   </div>
   <!-- Surah list tab -->
   <div id="panelSurahs">
@@ -635,6 +750,7 @@ var _pollInterval = setInterval(function() {
     }
     // Keep now-reading updated while connected (poll every 2s instead of 500ms)
     updateNowReading()
+    updateActivityPanels()
   } else {
     badge.textContent = 'Connecting…'
     badge.className = 'status-badge connecting'
@@ -738,6 +854,7 @@ function setReadingSpeed(secs) {
 }
 function startReadingMode() {
   if (!window.noor) { showToast('Glasses not connected yet'); return }
+  if (window.noor.endActivity) window.noor.endActivity()   // leave دروس/تسطير explicitly
   readingModeActive = true
   rmSecondsLeft     = readingModeSpeed
   const panel  = document.getElementById('readingModePanel')
@@ -799,6 +916,61 @@ function toggleReadingMode() {
     showToast('Reading Mode started — ' + readingModeSpeed + 's per tile')
   }
 }
+// ── Learning activities (دروس / تسطير) ───────────────────────────────────────
+// The phone UI and the glasses logic (main.ts) share this WebView, so the
+// buttons call window.noor directly; main.ts renders to the G2 through its
+// normal Even Hub bridge and render queue, and fires 'noor:state' after every
+// state change (including G2 gestures) so these panels stay in sync.
+function arNum(n) { return String(n).replace(/\d/g, function(d) { return String.fromCharCode(0x0660 + Number(d)) }) }
+function startLesson() {
+  if (!window.noor || !window.noor.startLesson) { showToast('Glasses not connected yet'); return }
+  if (readingModeActive) stopReadingMode()
+  window.noor.startLesson()
+  updateActivityPanels()
+  showToast('دروس — page ' + window.noor.page)
+}
+function startTasteer() {
+  if (!window.noor || !window.noor.startTasteer) { showToast('Glasses not connected yet'); return }
+  if (readingModeActive) stopReadingMode()
+  window.noor.startTasteer()
+  updateActivityPanels()
+  showToast('تسطير — page ' + window.noor.page)
+}
+function endActivity() {
+  if (window.noor && window.noor.endActivity) window.noor.endActivity()
+  updateActivityPanels()
+}
+function updateActivityPanels() {
+  if (!window.noor) return
+  const page = window.noor.page || 1
+  const label = 'الصفحة ' + arNum(page) + ' · ' + SURAHS[getSurahForPage(page)][1]
+  document.getElementById('lessonPage').textContent = label
+  document.getElementById('tasteerPage').textContent = label
+  const st = window.noor.memo ? window.noor.memo.state : null
+  const lessonActive  = !!st && st.phase === 'memo'
+  const tasteerActive = !!st && st.phase === 'recall'
+  document.getElementById('lessonPanel').classList.toggle('active', lessonActive)
+  document.getElementById('tasteerPanel').classList.toggle('active', tasteerActive)
+  if (!st) return
+  const section = ' · المقطع ' + arNum(st.section + 1) + '/' + arNum(st.sectionCount)
+  if (lessonActive) {
+    const el = document.getElementById('lessonStatus')
+    el.textContent = 'المرحلة ' + arNum(st.stage) + ' من ٧' + section
+    const dots = document.createElement('span')
+    dots.className = 'act-dots'
+    for (let k = 0; k < 7; k++) {
+      const d = document.createElement('span')
+      d.className = 'act-dot' + (k < st.stage ? ' on' : '')
+      dots.appendChild(d)
+    }
+    el.appendChild(dots)
+  } else {
+    document.getElementById('tasteerStatus').textContent =
+      'ظهرت ' + arNum(st.recallIndex + 1) + ' من ' + arNum(st.words) + ' كلمة' + section
+  }
+}
+// Immediate updates on every app state change (G2 gestures, phone buttons, page jumps)
+window.addEventListener('noor:state', function() { updateActivityPanels(); updateNowReading() })
 // ── Init ──────────────────────────────────────────────────────────────────────
 buildSurahList()
 buildJuzGrid()

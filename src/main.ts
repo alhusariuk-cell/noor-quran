@@ -16,8 +16,11 @@
  * ─── Modes ────────────────────────────────────────────────────────────────────
  *   READING  – 5 lines of Quranic text per screen, 3 screens per page
  *   SELECTOR – surah picker, 7 rows visible, one highlighted
- *   MEMO     – memorisation (حفظ) and recall (تسميع) for the current page
- *              (test builds; logic in memorisation.ts)
+ *   MEMO     – دروس (seven-stage progressive hiding) and تسطير (word-by-word
+ *              recall) for the current page (test builds; logic in
+ *              memorisation.ts). Started from the phone panels via
+ *              window.noor.startLesson() / startTasteer(), or from the
+ *              glasses selector row. Glasses footer shows دروس / تسطير.
  *
  * ─── Navigation ───────────────────────────────────────────────────────────────
  *   READING mode:
@@ -53,9 +56,9 @@ import {
 } from '@evenrealities/even_hub_sdk'
 import { MUSHAF_DATA } from './mushaf-bundle'
 import {
-  buildMemoPage, startSession, advance as memoAdvanceState, back as memoBackState,
+  buildMemoPage, startSession, startTasteer, advance as memoAdvanceState, back as memoBackState,
   nextSection as memoNextSectionState, isWordHidden, revealedCount, MAX_STAGE,
-  type MemoSession,
+  type MemoSession, type Activity,
 } from './memorisation'
 
 // ─── G2 display constants ─────────────────────────────────────────────────────
@@ -197,6 +200,8 @@ function enqueueRender(fn: () => Promise<void>): void {
   _displayDirty = true
   renderQueue = [fn]
   if (!renderRunning) drainQueue()
+  // Every state change re-renders through here; tell the phone UI (same WebView) to refresh.
+  try { window.dispatchEvent(new CustomEvent('noor:state')) } catch (_) {}
 }
 async function drainQueue(gen: number = renderGeneration): Promise<void> {
   renderRunning = true
@@ -771,7 +776,7 @@ function drawMemoFooter(ctx: CanvasRenderingContext2D, s: MemoSession, pageNum: 
   // Right: mode label
   ctx.font = `${FOOTER_FONT_SIZE}px '${ARABIC_FONT_FAMILY}', serif`
   ctx.textAlign = 'right'; ctx.direction = 'rtl'
-  ctx.fillText(s.phase === 'memo' ? 'حفظ' : 'تسميع', COL_RIGHT, footerY)
+  ctx.fillText(s.phase === 'memo' ? 'دروس' : 'تسطير', COL_RIGHT, footerY)
 }
 
 async function _doRenderMemoView(): Promise<void> {
@@ -796,14 +801,27 @@ function logMemo(action: string): void {
     `recall=${revealedCount(memo)}/${memo.page.words.length} section=${memo.section + 1}/${memo.page.sectionCount}`)
 }
 
-/** Start memorisation on the current page and screen with a fresh session seed. */
-function startMemo(seed?: number): void {
+/**
+ * Start a fresh session on the current page. Always builds new state (new seed,
+ * stage 0 / recall 0, cleared debounce), so nothing carries over from a previous
+ * session or activity.
+ *   'lesson'  (دروس): stage 0 at `section` (glasses selector: current screen; phone: first section)
+ *   'tasteer' (تسطير): recall with every eligible word hidden, first section
+ */
+function startActivity(activity: Activity, seed?: number, section = 0): void {
   const page = buildMemoPage(getPage(currentPage).lines)
   const sessionSeed = (seed ?? (Date.now() ^ (currentPage * 2654435761))) >>> 0
-  memo = startSession(page, sessionSeed, currentScreen)
+  memo = activity === 'tasteer' ? startTasteer(page, sessionSeed) : startSession(page, sessionSeed, section)
   mode = 'memo'
-  console.log(`[Noor][memo] start page=${currentPage} seed=${sessionSeed} words=${page.words.length} sections=${page.sectionCount}`)
+  lastNavTime = {}
+  console.log(`[Noor][memo] start activity=${activity} page=${currentPage} seed=${sessionSeed} ` +
+    `words=${page.words.length} sections=${page.sectionCount}`)
   renderMemoView()
+}
+
+/** Glasses selector row: دروس on the current page and screen (M1 behaviour). */
+function startMemo(seed?: number): void {
+  startActivity('lesson', seed, currentScreen)
 }
 
 function exitMemo(): void {
@@ -1104,7 +1122,8 @@ main()
     saveBookmark(); renderReadingView()
   },
   goNext, goPrev,
-  nextScreen: () => goNext(),
+  // Phone auto-advance must not move the page under an active دروس/تسطير session
+  nextScreen: () => { if (mode !== 'memo') goNext() },
   refresh: () => {
     // Inline hardReset — prevents Vite tree-shaking
     _dbgResetCount++
@@ -1126,6 +1145,10 @@ main()
     }, 2000)
   },
   // Memorisation test hooks (bypass gesture debounce; used by automated tests)
+  /** Phone UI: start دروس (stage 0) / تسطير (all hidden) on the current page; end either. */
+  startLesson:  (seed?: number) => startActivity('lesson', seed, 0),
+  startTasteer: (seed?: number) => startActivity('tasteer', seed, 0),
+  endActivity:  () => { if (mode === 'memo') exitMemo() },
   memo: {
     start: (seed?: number) => startMemo(seed),
     advance: () => { if (memo) { memo = memoAdvanceState(memo); renderMemoView() } },
@@ -1146,7 +1169,7 @@ main()
       })))
     },
     get state() {
-      return memo && { phase: memo.phase, stage: memo.stage, recallIndex: memo.recallIndex,
+      return memo && { activity: memo.activity, phase: memo.phase, stage: memo.stage, recallIndex: memo.recallIndex,
         section: memo.section, sectionCount: memo.page.sectionCount, words: memo.page.words.length, seed: memo.seed }
     },
   },

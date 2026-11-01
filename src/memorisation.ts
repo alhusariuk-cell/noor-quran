@@ -164,23 +164,37 @@ export function rankOf(order: number[]): Int32Array {
 
 // ─── Session state machine ────────────────────────────────────────────────────
 
+/**
+ * 'lesson'  (دروس)  — starts at stage 0; seven cumulative hiding stages, then recall.
+ * 'tasteer' (تسطير) — starts directly in recall with every eligible word hidden.
+ */
+export type Activity = 'lesson' | 'tasteer'
+
 export interface MemoSession {
   page: MemoPage
   seed: number
   rank: Int32Array
+  activity: Activity
   phase: 'memo' | 'recall'
   stage: number        // 0..7 (memo phase)
   recallIndex: number  // -1..N-1: index of the last revealed word (recall phase)
   section: number      // currently displayed five-line section
 }
 
+/** New دروس session at stage 0. */
 export function startSession(page: MemoPage, seed: number, section: number): MemoSession {
   return {
     page, seed,
     rank: rankOf(hidingOrder(page.words.length, seed)),
+    activity: 'lesson',
     phase: 'memo', stage: 0, recallIndex: -1,
     section: Math.min(Math.max(0, section), page.sectionCount - 1),
   }
+}
+
+/** New تسطير session: recall from the start, all eligible words hidden, first section. */
+export function startTasteer(page: MemoPage, seed: number): MemoSession {
+  return { ...startSession(page, seed, 0), activity: 'tasteer', phase: 'recall', stage: MAX_STAGE }
 }
 
 /** Result of a gesture: the new session, or 'exit' to return to Reading Mode. */
@@ -199,11 +213,12 @@ export function advance(s: MemoSession): MemoSession {
 
 /**
  * SCROLL_TOP_EVENT: previous stage / re-hide last word / recall start → stage 7.
- * At memorisation stage 0 it returns 'exit' (back to Reading Mode).
+ * At memorisation stage 0 it returns 'exit' (back to Reading Mode). A تسطير
+ * session has no stages, so back before its first word also exits.
  */
 export function back(s: MemoSession): MemoResult {
   if (s.phase === 'recall') {
-    if (s.recallIndex < 0) return { ...s, phase: 'memo', stage: MAX_STAGE }
+    if (s.recallIndex < 0) return s.activity === 'tasteer' ? 'exit' : { ...s, phase: 'memo', stage: MAX_STAGE }
     return { ...s, recallIndex: s.recallIndex - 1, section: sectionOfWord(s.page, s.recallIndex) }
   }
   if (s.stage > 0) return { ...s, stage: s.stage - 1 }

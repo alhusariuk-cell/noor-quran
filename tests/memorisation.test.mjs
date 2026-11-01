@@ -4,7 +4,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import {
-  buildMemoPage, hidingOrder, hiddenCountAtStage, startSession, advance, back, nextSection,
+  buildMemoPage, hidingOrder, hiddenCountAtStage, startSession, startTasteer, advance, back, nextSection,
   isWordHidden, revealedCount, sectionOfWord, stripMarks, STRIP_RE, MAX_STAGE,
 } from '../src/memorisation.ts'
 import { MUSHAF_DATA } from '../src/mushaf-bundle.ts'
@@ -287,4 +287,47 @@ test('first and last words of the page are hideable and revealed first/last in r
     for (let i = 1; i < N; i++) s = advance(s)
     assert.equal(isWordHidden(s, N - 1), false)
   }
+})
+
+// ── M1.1: تسطير started directly, and switching activities ───────────────────
+
+test('تسطير starts in recall: every eligible word hidden, 0 revealed, first section', () => {
+  for (const p of [1, 2, 50, 300, 586, 604]) {
+    const page = memoPage(p)
+    const s = startTasteer(page, 9)
+    assert.equal(s.activity, 'tasteer'); assert.equal(s.phase, 'recall')
+    assert.equal(s.recallIndex, -1); assert.equal(revealedCount(s), 0); assert.equal(s.section, 0)
+    assert.equal(hiddenSet(s).size, page.words.length)
+    // ayah markers are not words, so they are never hidden
+    assert.ok(page.lines.flatMap(l => l.tokens).filter(t => t.role === 'ayah').every(t => t.word === -1))
+  }
+})
+
+test('تسطير: reveal/re-hide like recall; back before the first word exits (no stages)', () => {
+  const page = memoPage(300), N = page.words.length
+  let s = startTasteer(page, 4)
+  for (let i = 0; i < N; i++) { s = advance(s); assert.equal(revealedCount(s), i + 1); assert.equal(s.section, sectionOfWord(page, i)) }
+  assert.equal(advance(s), s)
+  for (let i = N; i > 0; i--) { s = back(s); assert.equal(revealedCount(s), i - 1) }
+  assert.equal(s.phase, 'recall')
+  assert.equal(back(s), 'exit')
+})
+
+test('دروس keeps M1 rules: recall reached from stage 7 goes back to stage 7', () => {
+  let s = startSession(memoPage(50), 4, 0)
+  assert.equal(s.activity, 'lesson')
+  for (let k = 0; k < 8; k++) s = advance(s)
+  assert.equal(s.phase, 'recall'); assert.equal(s.activity, 'lesson')
+  s = back(s)
+  assert.equal(s.phase, 'memo'); assert.equal(s.stage, 7)
+})
+
+test('a new session never inherits state from the previous one', () => {
+  const page = memoPage(50)
+  let a = startSession(page, 1, 2)
+  for (let k = 0; k < 5; k++) a = advance(a)
+  const t = startTasteer(page, 2)
+  assert.equal(t.recallIndex, -1); assert.equal(t.section, 0); assert.equal(t.stage, MAX_STAGE)
+  const l = startSession(page, 3, 0)
+  assert.equal(l.stage, 0); assert.equal(l.phase, 'memo'); assert.equal(hiddenSet(l).size, 0)
 })
