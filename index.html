@@ -610,7 +610,7 @@
       </div>
       <button class="btn-act-start" id="btnStartLesson" onclick="startLesson()">ابدأ الدرس</button>
     </div>
-    <div class="act-desc">تختفي الكلمات تدريجيًا عبر سبع مراحل حتى تُخفى الصفحة كاملة، مع بقاء أرقام الآيات ظاهرة.</div>
+    <div class="act-desc">تُحفظ الصفحة مقطعًا مقطعًا مع السطر التالي: تختفي الكلمات عبر سبع مراحل، ثم تسطير المقطع، ثم مراجعة الصفحة كاملة. أرقام الآيات تبقى ظاهرة.</div>
     <div class="act-status">
       <span id="lessonStatus">المرحلة ٠ من ٧</span>
       <button class="btn-act-end" onclick="endActivity()">إنهاء</button>
@@ -947,26 +947,37 @@ function updateActivityPanels() {
   document.getElementById('lessonPage').textContent = label
   document.getElementById('tasteerPage').textContent = label
   const st = window.noor.memo ? window.noor.memo.state : null
-  const lessonActive  = !!st && st.phase === 'memo'
-  const tasteerActive = !!st && st.phase === 'recall'
+  // Structured دروس flow (all its phases) → دروس panel; standalone تسطير → تسطير panel
+  const lessonActive  = !!st && st.activity === 'lesson'
+  const tasteerActive = !!st && st.activity === 'tasteer'
   document.getElementById('lessonPanel').classList.toggle('active', lessonActive)
   document.getElementById('tasteerPanel').classList.toggle('active', tasteerActive)
   if (!st) return
-  const section = ' · المقطع ' + arNum(st.section + 1) + '/' + arNum(st.sectionCount)
+  const section = 'المقطع ' + arNum(st.k + 1) + '/' + arNum(st.sectionCount)
   if (lessonActive) {
     const el = document.getElementById('lessonStatus')
-    el.textContent = 'المرحلة ' + arNum(st.stage) + ' من ٧' + section
-    const dots = document.createElement('span')
-    dots.className = 'act-dots'
-    for (let k = 0; k < 7; k++) {
-      const d = document.createElement('span')
-      d.className = 'act-dot' + (k < st.stage ? ' on' : '')
-      dots.appendChild(d)
+    if (st.phase === 'memo') {
+      el.textContent = section + ' · المرحلة ' + arNum(st.stage) + ' من ٧'
+      const dots = document.createElement('span')
+      dots.className = 'act-dots'
+      for (let k = 0; k < 7; k++) {
+        const d = document.createElement('span')
+        d.className = 'act-dot' + (k < st.stage ? ' on' : '')
+        dots.appendChild(d)
+      }
+      el.appendChild(dots)
+    } else if (st.phase === 'recall') {
+      el.textContent = section + ' · تسطير ' + arNum(st.revealed) + ' من ' + arNum(st.total)
+    } else if (st.phase === 'done') {
+      el.textContent = section + ' · ✓ اكتمل — اسحب للأمام للمتابعة'
+    } else if (st.phase === 'final') {
+      el.textContent = 'مراجعة الصفحة كاملة · ' + arNum(st.revealed) + ' من ' + arNum(st.total)
+    } else {
+      el.textContent = '✓ اكتملت الصفحة · ' + arNum(st.total) + ' كلمة'
     }
-    el.appendChild(dots)
   } else {
     document.getElementById('tasteerStatus').textContent =
-      'ظهرت ' + arNum(st.recallIndex + 1) + ' من ' + arNum(st.words) + ' كلمة' + section
+      'ظهرت ' + arNum(st.revealed) + ' من ' + arNum(st.total) + ' كلمة · المقطع ' + arNum(st.section + 1) + '/' + arNum(st.sectionCount)
   }
 }
 // Immediate updates on every app state change (G2 gestures, phone buttons, page jumps)

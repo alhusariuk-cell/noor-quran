@@ -6,6 +6,7 @@ import { readFileSync } from 'node:fs'
 import {
   buildMemoPage, hidingOrder, hiddenCountAtStage, startSession, startTasteer, advance, back, nextSection,
   isWordHidden, revealedCount, sectionOfWord, stripMarks, STRIP_RE, MAX_STAGE, nextPreviewLine,
+  buildExercises, startFlow, flowAdvance, flowBack, flowHidden, flowProgress, exerciseCount, sectionSeed,
 } from '../src/memorisation.ts'
 import { MUSHAF_DATA } from '../src/mushaf-bundle.ts'
 
@@ -393,4 +394,170 @@ test('preview never belongs to the current section and does not change the sessi
     }
     assert.equal(memoPage(p).words.length, page.words.length)
   }
+})
+
+// ── M1.2 experiment B: section-by-section workflow ───────────────────────────
+
+const flowFor = (p, seed = 7) => { const page = memoPage(p); return startFlow(page, buildExercises(getLines, page, p), seed) }
+const exHidden = f => { const e = f.exercises[f.k]; const h = []; for (let id = e.start; id < e.end; id++) if (flowHidden(f, id)) h.push(id); return h }
+const key = f => f === 'exit' ? 'exit' : `${f.phase}|k${f.k}|s${f.stage}|i${f.index}|v${f.section}`
+
+test('exercises on all 604 pages: contiguous ranges, every page word in exactly one section, preview identity', () => {
+  let external = 0, inPage = 0
+  for (const p of PAGES) {
+    const page = memoPage(p), N = page.words.length, ex = buildExercises(getLines, page, p)
+    assert.equal(ex.length, page.sectionCount)
+    let next = 0
+    for (const e of ex) {
+      assert.equal(e.start, next, `page ${p} section ${e.section + 1}: gap`)
+      for (let id = e.start; id < e.mainEnd; id++) assert.equal(Math.floor(page.words[id].line / 5), e.section)
+      next = e.mainEnd
+      const pv = e.preview
+      if (!pv) { assert.ok(p === 604 && e.section === ex.length - 1); assert.equal(e.end, e.mainEnd); continue }
+      const ids = pv.tokens.filter(t => t.role === 'word').map(t => t.word)
+      assert.ok(ids.length > 0)
+      ids.forEach((id, j) => assert.ok(j === 0 || id >= ids[j - 1]))            // reading order
+      assert.equal(ids[0], e.mainEnd, `page ${p} section ${e.section + 1}: preview not contiguous`)
+      assert.equal(e.end, ids[ids.length - 1] + 1)
+      assert.deepEqual(pv.tokens.map(t => t.text), pv.text.split(' ').filter(Boolean))   // verbatim line
+      if (pv.external) {
+        external++
+        assert.equal(e.section, ex.length - 1); assert.ok(ids.every(id => id >= N))
+      } else {
+        inPage++
+        // same identity as the next section's own words — never a new count
+        assert.ok(ids.every(id => id < N && Math.floor(page.words[id].line / 5) === e.section + 1))
+        assert.equal(page.words[ids[0]].line, pv.line)
+      }
+    }
+    assert.equal(next, N, `page ${p}: sections do not cover all words`)
+  }
+  assert.equal(external, 603); assert.equal(inPage, 1810 - 604)
+})
+
+test('preview participates in every stage; counts round(s × n / 7) over main + preview; stage 7 hides all', () => {
+  let previewHiddenSomewhere = 0, sections = 0
+  for (const p of PAGES) {
+    let f = flowFor(p, 1000 + p)
+    for (;;) {
+      const e = f.exercises[f.k], n = exerciseCount(e)
+      const prevIds = new Set(e.preview ? e.preview.tokens.filter(t => t.role === 'word').map(t => t.word) : [])
+      let prev = new Set(), sawPreview = false
+      for (let s = 0; s <= MAX_STAGE; s++) {
+        const h = exHidden(f)
+        assert.equal(h.length, s === 0 ? 0 : s === 7 ? n : Math.round(s * n / 7), `page ${p} section ${f.k + 1} stage ${s}`)
+        for (const id of prev) assert.ok(h.includes(id), 'not cumulative')
+        if (h.some(id => prevIds.has(id))) sawPreview = true
+        prev = new Set(h)
+        if (s < MAX_STAGE) f = flowAdvance(f)
+      }
+      if (sawPreview) previewHiddenSomewhere++
+      sections++
+      // skip to the next section via recall and DONE
+      f = flowAdvance(f)
+      while (f.phase === 'recall') f = flowAdvance(f)
+      assert.equal(f.phase, 'done')
+      f = flowAdvance(f)
+      if (f.phase !== 'memo') break
+    }
+  }
+  assert.equal(sections, 1810)
+  assert.equal(previewHiddenSomewhere, 1809)   // every section with a preview hides preview words by stage 7
+})
+
+test('deterministic hiding: same seed → same sets; revisiting a stage restores it; stages 1–2 non-adjacent', () => {
+  for (const p of [1, 2, 50, 186, 226, 586, 590, 604]) {
+    for (const seed of SEEDS) {
+      let a = flowFor(p, seed), b = flowFor(p, seed)
+      const at = {}
+      for (let s = 1; s <= 7; s++) {
+        a = flowAdvance(a); b = flowAdvance(b)
+        assert.deepEqual(exHidden(a), exHidden(b))
+        at[s] = exHidden(a).join(',')
+        if (s <= 2) { const h = new Set(exHidden(a)); for (const id of h) assert.ok(!h.has(id + 1), `page ${p} stage ${s}: adjacent`) }
+      }
+      for (let s = 7; s >= 1; s--) { assert.equal(exHidden(a).join(','), at[s]); a = flowBack(a) }
+      a = flowAdvance(flowAdvance(flowAdvance(flowAdvance(a))))
+      assert.equal(exHidden(a).join(','), at[4])                     // 4 → 3 → 4 identical
+      a = flowBack(a); a = flowAdvance(a); assert.equal(exHidden(a).join(','), at[4])
+    }
+    assert.notEqual(sectionSeed(1, 0), sectionSeed(1, 1))
+  }
+})
+
+test('section recall: main lines first, then preview word by word; back re-hides; DONE needs one more swipe', () => {
+  let f = flowFor(50, 3)
+  for (let s = 0; s < 8; s++) f = flowAdvance(f)
+  assert.equal(f.phase, 'recall'); assert.equal(f.index, -1)
+  const e = f.exercises[0], n = exerciseCount(e)
+  assert.equal(exHidden(f).length, n)
+  for (let i = 0; i < n; i++) {
+    f = flowAdvance(f)
+    for (let id = e.start; id < e.end; id++) assert.equal(flowHidden(f, id), id > e.start + i)
+    assert.deepEqual(flowProgress(f), { revealed: i + 1, total: n })
+    assert.equal(f.section, 0)                                        // view stays on the section
+    assert.equal(f.phase, i < n - 1 ? 'recall' : 'done')              // last (preview) word → DONE
+  }
+  assert.ok(e.end > e.mainEnd)                                        // preview words were included last
+  assert.equal(f.k, 0)
+  const back1 = flowBack(f)                                           // back re-hides the last word
+  assert.equal(back1.phase, 'recall'); assert.equal(back1.index, n - 2); assert.ok(flowHidden(back1, e.end - 1))
+  assert.equal(flowAdvance(back1).phase, 'done')
+  f = flowAdvance(f)                                                  // one additional swipe → next section
+  assert.equal(f.phase, 'memo'); assert.equal(f.k, 1); assert.equal(f.stage, 0); assert.equal(f.section, 1)
+  assert.equal(exHidden(f).length, 0)                                 // next section starts its own stage 0
+})
+
+test('sections 1 → 2 → 3 → final → complete on page 50; final recall counts each page word once', () => {
+  let f = flowFor(50, 9), N = f.page.words.length
+  const seen = []
+  for (let guard = 0; guard < 5000 && f.phase !== 'complete'; guard++) {
+    const before = key(f); f = flowAdvance(f); seen.push(`${before}→${f.phase}${f.k}`)
+  }
+  assert.equal(f.phase, 'complete')
+  const transitions = seen.filter(t => /done\|/.test(t)).map(t => t.split('→')[1])
+  assert.deepEqual(transitions, ['memo1', 'memo2', 'final2'])
+  // replay the final recall: 0..N-1 exactly once, never an external id
+  let g = flowFor(50, 9)
+  while (g.phase !== 'final') g = flowAdvance(g)
+  assert.equal(g.index, -1); assert.equal(g.section, 0)
+  for (let id = 0; id < N + 20; id++) assert.equal(flowHidden(g, id), id < N)
+  const revealed = []
+  while (g.phase === 'final') { g = flowAdvance(g); revealed.push(g.index) }  // last reveal → COMPLETE
+  assert.equal(g.phase, 'complete')
+  assert.deepEqual(revealed, Array.from({ length: N }, (_, i) => i))
+  assert.deepEqual(flowProgress(g), { revealed: N, total: N })
+})
+
+test('every page: forward walk to COMPLETE and backward walk to exit are exact mirrors', () => {
+  for (const p of PAGES) {
+    let f = flowFor(p, p)
+    const states = [key(f)]
+    while (f.phase !== 'complete') { f = flowAdvance(f); states.push(key(f)) }
+    assert.equal(flowAdvance(f), f)                                   // COMPLETE: no further step
+    for (let i = states.length - 1; i > 0; i--) {
+      assert.equal(key(f), states[i], `page ${p} step ${i}`)
+      f = flowBack(f)
+    }
+    assert.equal(key(f), states[0]); assert.equal(flowBack(f), 'exit')
+    // advance(back(x)) = x on a sample of states
+  }
+})
+
+test('short pages and page 604: section counts, external previews, no preview at the end', () => {
+  for (const [p, n] of [[1, 2], [2, 2], [586, 3], [590, 3], [604, 3]]) {
+    const f = flowFor(p)
+    assert.equal(f.exercises.length, n)
+  }
+  const ex604 = flowFor(604).exercises
+  assert.equal(ex604[2].preview, null); assert.equal(ex604[2].end, ex604[2].mainEnd)
+  let f = flowFor(604, 2)
+  while (!(f.phase === 'done' && f.k === 2)) f = flowAdvance(f)
+  assert.equal(flowProgress(f).total, exerciseCount(ex604[2]))      // no preview: DONE after the last main word
+  assert.equal(flowProgress(f).revealed, exerciseCount(ex604[2]))
+  assert.equal(flowAdvance(f).phase, 'final')
+  const ex1 = flowFor(1).exercises
+  assert.equal(ex1[1].preview.page, 2); assert.equal(ex1[1].preview.external, true)
+  const N1 = memoPage(1).words.length
+  assert.ok(ex1[1].preview.tokens.filter(t => t.role === 'word').every(t => t.word >= N1))
 })

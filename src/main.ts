@@ -38,12 +38,14 @@
  *     confirming it starts MEMO on the current page and screen.
  *
  *   MEMO mode (mapped by SDK event id, not by physical swipe direction):
- *     SCROLL_BOTTOM_EVENT → next stage (0–7); past stage 7 → recall;
- *                           in recall: reveal next word
- *     SCROLL_TOP_EVENT    → previous stage; at stage 0 → back to READING;
- *                           in recall: re-hide last word; before the
- *                           first word → back to stage 7
- *     Single tap          → next five-line section (wraps)
+ *   Structured دروس flow (M1.2-B), per section incl. its footer preview line:
+ *     SCROLL_BOTTOM_EVENT → one step forward: stage 0→7, section recall word by
+ *                           word (main lines, then preview), DONE, next section
+ *                           (one extra swipe), … final whole-page recall, COMPLETE
+ *     SCROLL_TOP_EVENT    → exactly one step back; section 1 stage 0 → READING
+ *     Single tap          → no action (never skips a section)
+ *     Crossing a phase/section boundary holds same-direction swipes for 800 ms.
+ *   Standalone تسطير (phone): page-wide recall as in M1.1; tap → next section.
  *     Double tap          → unchanged: exit popup, as in READING
  */
 import {
@@ -56,9 +58,10 @@ import {
 } from '@evenrealities/even_hub_sdk'
 import { MUSHAF_DATA } from './mushaf-bundle'
 import {
-  buildMemoPage, startSession, startTasteer, advance as memoAdvanceState, back as memoBackState,
-  nextSection as memoNextSectionState, isWordHidden, revealedCount, MAX_STAGE, nextPreviewLine,
-  type MemoSession, type Activity,
+  buildMemoPage, startTasteer, advance as memoAdvanceState, back as memoBackState,
+  nextSection as memoNextSectionState, isWordHidden, revealedCount, MAX_STAGE,
+  buildExercises, startFlow, flowAdvance, flowBack, flowHidden, flowProgress,
+  type MemoSession, type MemoPage, type Activity, type Flow, type SectionExercise, type PreviewModel,
 } from './memorisation'
 
 // ─── G2 display constants ─────────────────────────────────────────────────────
@@ -221,7 +224,7 @@ let currentScreen      = 0
 let currentSurahNum    = 0   // surah number last confirmed; 0 = not set
 let selectorIndex      = 0
 let selectorMemoRow    = -1  // index of the "حفظ هذه الصفحة" row in the selector list
-let memo: MemoSession | null = null
+let memo: ActiveSession | null = null
 let fontLoaded         = false
 let lastEventTime      = 0
 let lastNavTime: Record<number, number> = {}
@@ -642,10 +645,35 @@ function confirmSelector(): void {
   renderReadingView()
 }
 
-// ─── Memorisation mode (حفظ / تسميع) ──────────────────────────────────────────
+// ─── Memorisation mode (دروس / تسطير) ─────────────────────────────────────────
+//
+// Two kinds of session:
+//   'lesson'  (دروس)  — M1.2-B structured flow, section by section:
+//                       MEMO 0–7 → section RECALL → DONE → next section …
+//                       → FINAL whole-page recall → COMPLETE. The footer
+//                       preview line takes part in each section's exercise.
+//   'tasteer' (تسطير) — standalone page-wide recall from the phone (M1.1);
+//                       preview words follow the page recall state.
 const MEMO_PLACEHOLDER_COLOR = '#888'
 const MEMO_PLACEHOLDER_H     = 2      // px
 const MEMO_PLACEHOLDER_FILL  = 0.85   // fraction of the word's width (as in Hafiz)
+const BOUNDARY_COOLDOWN_MS   = 800    // after crossing a state boundary, ignore same-direction swipes
+
+type ActiveSession =
+  | { kind: 'lesson'; flow: Flow }
+  | { kind: 'tasteer'; s: MemoSession; exercises: SectionExercise[] }
+
+function sessionPage(a: ActiveSession): MemoPage { return a.kind === 'lesson' ? a.flow.page : a.s.page }
+function sessionSection(a: ActiveSession): number { return a.kind === 'lesson' ? a.flow.section : a.s.section }
+function sessionPreview(a: ActiveSession): PreviewModel | null {
+  const ex = a.kind === 'lesson' ? a.flow.exercises : a.exercises
+  return ex[sessionSection(a)]?.preview ?? null
+}
+/** Is word id (page id, or ≥ N for a next-page preview word) hidden right now? */
+function sessionHidden(a: ActiveSession, id: number): boolean {
+  if (a.kind === 'lesson') return flowHidden(a.flow, id)
+  return id < a.s.page.words.length && isWordHidden(a.s, id)
+}
 
 interface PlacedToken { text: string; role: 'word' | 'ayah'; word: number; x: number; w: number }
 interface PlacedLine { type: string; text: string; y: number; fs: number; tokens: PlacedToken[] }
@@ -654,9 +682,9 @@ interface PlacedLine { type: string; text: string; y: number; fs: number; tokens
  * Lay out one five-line section exactly as renderLinesToQuads does (font
  * fitting and RTL word-gap justification), with every word present.
  */
-function layoutMemoSection(ctx: CanvasRenderingContext2D, s: MemoSession): PlacedLine[] {
-  const start = s.section * LINES_PER_SCREEN
-  const lines = s.page.lines.slice(start, start + LINES_PER_SCREEN)
+function layoutMemoSection(ctx: CanvasRenderingContext2D, page: MemoPage, section: number): PlacedLine[] {
+  const start = section * LINES_PER_SCREEN
+  const lines = page.lines.slice(start, start + LINES_PER_SCREEN)
   const lineH = Math.floor(TEXT_AREA_H / LINES_PER_SCREEN)   // Reading pads to 5 lines too
   return lines.map((line, i) => {
     const y = i * lineH + lineH / 2
@@ -687,19 +715,41 @@ function layoutMemoSection(ctx: CanvasRenderingContext2D, s: MemoSession): Place
   })
 }
 
+/** Draw visible tokens; replace hidden words by a thin placeholder over their span. */
+function drawTokens(ctx: CanvasRenderingContext2D, tokens: PlacedToken[], y: number, hidden: (id: number) => boolean,
+  placeholderColor: string, placeholderY: number): void {
+  const spans = new Map<number, [number, number]>()
+  ctx.textAlign = 'left'
+  for (const t of tokens) {
+    if (t.role === 'word' && hidden(t.word)) {
+      const sp = spans.get(t.word)
+      const l = t.x, r = t.x + t.w
+      spans.set(t.word, sp ? [Math.min(sp[0], l), Math.max(sp[1], r)] : [l, r])
+    } else {
+      ctx.fillText(t.text, t.x, y)
+    }
+  }
+  ctx.fillStyle = placeholderColor
+  for (const [l, r] of spans.values()) {
+    const w = (r - l) * MEMO_PLACEHOLDER_FILL
+    ctx.fillRect(Math.round(l + (r - l - w) / 2), Math.round(placeholderY), Math.max(1, Math.round(w)), MEMO_PLACEHOLDER_H)
+  }
+}
+
 /**
  * Render one five-line section of the memorisation page. Visible tokens are
  * drawn at their Reading Mode positions; hidden words become thin placeholders
  * at those same positions, so nothing reflows between stages.
  */
-function renderMemoQuads(s: MemoSession, pageNum: number): [number[], number[], number[], number[]] {
+function renderMemoQuads(a: ActiveSession, pageNum: number): [number[], number[], number[], number[]] {
   const lineH = Math.floor(TEXT_AREA_H / LINES_PER_SCREEN)
   const [canvas, ctx] = makeCanvas(IMG_W, IMG_H)
   ctx.fillStyle = '#fff'
   ctx.direction = 'rtl'
   ctx.textBaseline = 'middle'
+  const hidden = (id: number) => sessionHidden(a, id)
 
-  layoutMemoSection(ctx, s).forEach((line, i) => {
+  layoutMemoSection(ctx, sessionPage(a), sessionSection(a)).forEach((line, i) => {
     const y = line.y
     ctx.fillStyle = '#fff'
     if (line.type === 'surah-header') {
@@ -721,38 +771,23 @@ function renderMemoQuads(s: MemoSession, pageNum: number): [number[], number[], 
     }
     if (line.tokens.length === 0) return
     ctx.font = `${line.fs}px '${ARABIC_FONT_FAMILY}', serif`
-    // Visible tokens are drawn; hidden words collect their horizontal extent
-    const spans = new Map<number, [number, number]>()
-    ctx.textAlign = 'left'
-    for (const t of line.tokens) {
-      if (t.role === 'word' && isWordHidden(s, t.word)) {
-        const sp = spans.get(t.word)
-        const l = t.x, r = t.x + t.w
-        spans.set(t.word, sp ? [Math.min(sp[0], l), Math.max(sp[1], r)] : [l, r])
-      } else {
-        ctx.fillText(t.text, t.x, y)
-      }
-    }
-    ctx.fillStyle = MEMO_PLACEHOLDER_COLOR
-    for (const [l, r] of spans.values()) {
-      const w = (r - l) * MEMO_PLACEHOLDER_FILL
-      ctx.fillRect(Math.round(l + (r - l - w) / 2), Math.round(y), Math.max(1, Math.round(w)), MEMO_PLACEHOLDER_H)
-    }
+    drawTokens(ctx, line.tokens, y, hidden, MEMO_PLACEHOLDER_COLOR, y)
   })
 
-  drawMemoFooter(ctx, s, pageNum)
+  drawMemoFooter(ctx, a, pageNum)
   return sliceQuadrants(canvas)
 }
 
-// ─── Memorisation footer with next-line preview (M1.2 experiment A, Option C) ─
+// ─── Memorisation footer with next-line preview (M1.2, Option C) ──────────────
 //
 //   y 0–252   five Quran lines exactly as in Reading Mode (lowest ink on any
 //             page is y = 250.2, measured across all 1,810 sections)
 //   y 253     separator (Reading Mode keeps its separator at y = 258)
 //   y 254–287 footer row, centre y = 272.5:
-//     x 14–93    LEFT  zone: stage dots (دروس) or revealed/total (تسطير)
-//     x 102–474  PREVIEW: next Quran text line, Uthmanic Hafs 16 px, centred
-//     x 483–562  RIGHT zone: activity label + section n/total
+//     x 14–93    LEFT  zone: stage dots (دروس) / revealed÷total / ✓
+//     x 102–474  PREVIEW: next Quran text line, Uthmanic Hafs 16 px, centred;
+//                in M1.2-B its words take part in hiding and recall
+//     x 483–562  RIGHT zone: section n/total + activity label
 //   The page number is omitted here during memorisation (shown on the phone).
 const MEMO_SEPARATOR_Y   = 253
 const MEMO_FOOTER_Y      = 272.5
@@ -760,6 +795,7 @@ const PREVIEW_FONT_SIZE  = 16
 const PREVIEW_MIN_FONT   = 12
 const PREVIEW_MAX_W      = 372        // 102–474, centred on x = 288
 const PREVIEW_COLOR      = '#8a8a8a'  // dimmer than status (#aaa) and Quran text (#fff)
+const PREVIEW_PLACEHOLDER_COLOR = '#666'
 const ZONE_W             = 79         // side zones: 14–93 and 483–562
 const ZONE_RULE_COLOR    = '#444'
 const ZONE_RULE_H        = 16
@@ -773,22 +809,34 @@ function fitFont(ctx: CanvasRenderingContext2D, text: string, family: string, si
   while (ctx.measureText(text).width > maxW && fs > min) { fs--; ctx.font = `${fs}px ${family}` }
 }
 
-/** Footer: progress (left) · next-line preview (centre) · activity + section (right). */
-function drawMemoFooter(ctx: CanvasRenderingContext2D, s: MemoSession, pageNum: number): void {
+/**
+ * Preview tokens laid out as the centred line Reading-style text would be:
+ * fitted font, natural word spacing, right-to-left from the centred right edge.
+ */
+function layoutPreview(ctx: CanvasRenderingContext2D, pv: PreviewModel): PlacedToken[] {
+  fitFont(ctx, pv.text, `'${ARABIC_FONT_FAMILY}', serif`, PREVIEW_FONT_SIZE, PREVIEW_MIN_FONT, PREVIEW_MAX_W)
+  const space = ctx.measureText(' ').width
+  const widths = pv.tokens.map(t => ctx.measureText(t.text).width)
+  const total = widths.reduce((a, b) => a + b, 0) + space * Math.max(0, widths.length - 1)
+  let x = IMG_W / 2 + total / 2
+  return pv.tokens.map((t, i) => { x -= widths[i]; const p = { ...t, x, w: widths[i] }; x -= space; return p })
+}
+
+/** Footer: progress (left) · next-line preview (centre) · section + activity (right). */
+function drawMemoFooter(ctx: CanvasRenderingContext2D, a: ActiveSession, pageNum: number): void {
   ctx.strokeStyle = '#555'; ctx.lineWidth = 1
   // +0.5 puts the 1 px line exactly on pixel row 253 (an integer y would blur it over rows 252–253)
   ctx.beginPath(); ctx.moveTo(COL_LEFT, MEMO_SEPARATOR_Y + 0.5); ctx.lineTo(COL_RIGHT, MEMO_SEPARATOR_Y + 0.5); ctx.stroke()
   const y = MEMO_FOOTER_Y
   ctx.textBaseline = 'middle'
-  const arabic = `'${ARABIC_FONT_FAMILY}', serif`
 
-  // Preview: the next Quran text line, verbatim, never truncated (shrinks if too wide)
-  const preview = nextPreviewLine(n => getPage(n).lines, pageNum, s.section, TOTAL_PAGES)
-  if (preview) {
-    fitFont(ctx, preview.text, arabic, PREVIEW_FONT_SIZE, PREVIEW_MIN_FONT, PREVIEW_MAX_W)
+  // Preview: the next Quran text line, verbatim, never truncated; hidden words → placeholders
+  const pv = sessionPreview(a)
+  if (pv) {
+    const tokens = layoutPreview(ctx, pv)
     ctx.fillStyle = PREVIEW_COLOR
-    ctx.textAlign = 'center'; ctx.direction = 'rtl'
-    ctx.fillText(preview.text, IMG_W / 2, y)
+    ctx.direction = 'rtl'
+    drawTokens(ctx, tokens, y, id => sessionHidden(a, id), PREVIEW_PLACEHOLDER_COLOR, y)
   }
 
   // Thin rules separating the side zones from the preview
@@ -798,15 +846,21 @@ function drawMemoFooter(ctx: CanvasRenderingContext2D, s: MemoSession, pageNum: 
   }
 
   ctx.fillStyle = FOOTER_COLOR; ctx.strokeStyle = FOOTER_COLOR
-  // Left zone: seven stage dots (filled = stages reached) or revealed/total
-  if (s.phase === 'memo') {
+  const page = sessionPage(a)
+  const showDots = a.kind === 'lesson' && a.flow.phase === 'memo'
+  // Left zone: stage dots, or revealed/total (✓ when the section or page is complete)
+  if (showDots) {
     for (let k = 0; k < MAX_STAGE; k++) {
       ctx.beginPath(); ctx.arc(COL_LEFT + STAGE_DOT_R + 1 + k * STAGE_DOT_STEP, y, STAGE_DOT_R, 0, Math.PI * 2)
-      if (k < s.stage) ctx.fill()
+      if (k < a.flow.stage) ctx.fill()
       else { ctx.lineWidth = 1; ctx.stroke() }
     }
   } else {
-    const count = `${toArabicNumerals(revealedCount(s))}/${toArabicNumerals(s.page.words.length)}`
+    const { revealed, total } = a.kind === 'lesson'
+      ? flowProgress(a.flow)
+      : { revealed: revealedCount(a.s), total: page.words.length }
+    const doneMark = a.kind === 'lesson' && (a.flow.phase === 'done' || a.flow.phase === 'complete') ? '✓' : ''
+    const count = `${doneMark}${toArabicNumerals(revealed)}/${toArabicNumerals(total)}`
     fitFont(ctx, count, 'monospace', FOOTER_FONT_SIZE, FOOTER_MIN_FONT_SIZE, ZONE_W)
     ctx.textAlign = 'left'; ctx.direction = 'ltr'
     ctx.fillText(count, COL_LEFT, y)
@@ -814,10 +868,10 @@ function drawMemoFooter(ctx: CanvasRenderingContext2D, s: MemoSession, pageNum: 
   // Right zone: section n/total (left part) and activity label (right part)
   ctx.font = `${FOOTER_FONT_SIZE}px monospace`
   ctx.textAlign = 'left'; ctx.direction = 'ltr'
-  ctx.fillText(`${toArabicNumerals(s.section + 1)}/${toArabicNumerals(s.page.sectionCount)}`, COL_RIGHT - ZONE_W, y)
-  ctx.font = `${FOOTER_FONT_SIZE}px ${arabic}`
+  ctx.fillText(`${toArabicNumerals(sessionSection(a) + 1)}/${toArabicNumerals(page.sectionCount)}`, COL_RIGHT - ZONE_W, y)
+  ctx.font = `${FOOTER_FONT_SIZE}px '${ARABIC_FONT_FAMILY}', serif`
   ctx.textAlign = 'right'; ctx.direction = 'rtl'
-  ctx.fillText(s.phase === 'memo' ? 'دروس' : 'تسطير', COL_RIGHT, y)
+  ctx.fillText(showDots ? 'دروس' : 'تسطير', COL_RIGHT, y)
 }
 
 async function _doRenderMemoView(): Promise<void> {
@@ -836,37 +890,58 @@ function renderMemoView(): void {
   })
 }
 
+/** Plain summary of the session, for logs, the phone panels and tests. */
+function memoState() {
+  if (!memo) return null
+  const page = sessionPage(memo)
+  if (memo.kind === 'lesson') {
+    const f = memo.flow, pr = flowProgress(f)
+    return { activity: 'lesson' as const, phase: f.phase, k: f.k, stage: f.stage, index: f.index, recallIndex: f.index,
+      section: f.section, sectionCount: page.sectionCount, revealed: pr.revealed, total: pr.total,
+      words: page.words.length, seed: f.seed }
+  }
+  const s = memo.s
+  return { activity: 'tasteer' as const, phase: s.phase, k: s.section, stage: s.stage, index: s.recallIndex, recallIndex: s.recallIndex,
+    section: s.section, sectionCount: page.sectionCount, revealed: revealedCount(s), total: page.words.length,
+    words: page.words.length, seed: s.seed }
+}
+
 function logMemo(action: string): void {
-  if (!memo) return
-  console.log(`[Noor][memo] ${action} → phase=${memo.phase} stage=${memo.stage} ` +
-    `recall=${revealedCount(memo)}/${memo.page.words.length} section=${memo.section + 1}/${memo.page.sectionCount}`)
+  const st = memoState()
+  if (!st) return
+  console.log(`[Noor][memo] ${action} → ${st.activity} phase=${st.phase} section=${st.k + 1}/${st.sectionCount} ` +
+    `stage=${st.stage} progress=${st.revealed}/${st.total} view=${st.section + 1}`)
 }
 
 /**
  * Start a fresh session on the current page. Always builds new state (new seed,
- * stage 0 / recall 0, cleared debounce), so nothing carries over from a previous
- * session or activity.
- *   'lesson'  (دروس): stage 0 at `section` (glasses selector: current screen; phone: first section)
- *   'tasteer' (تسطير): recall with every eligible word hidden, first section
+ * stage 0 / recall 0, cleared debounce and cooldowns), so nothing carries over
+ * from a previous session or activity.
+ *   'lesson'  (دروس): structured flow from `section` (user entry points: section 1)
+ *   'tasteer' (تسطير): page-wide recall with every eligible word hidden, first section
  */
 function startActivity(activity: Activity, seed?: number, section = 0): void {
   const page = buildMemoPage(getPage(currentPage).lines)
+  const exercises = buildExercises(n => getPage(n).lines, page, currentPage, TOTAL_PAGES)
   const sessionSeed = (seed ?? (Date.now() ^ (currentPage * 2654435761))) >>> 0
-  memo = activity === 'tasteer' ? startTasteer(page, sessionSeed) : startSession(page, sessionSeed, section)
+  memo = activity === 'tasteer'
+    ? { kind: 'tasteer', s: startTasteer(page, sessionSeed), exercises }
+    : { kind: 'lesson', flow: startFlow(page, exercises, sessionSeed, section) }
   mode = 'memo'
   lastNavTime = {}
+  boundaryUntil = {}
   console.log(`[Noor][memo] start activity=${activity} page=${currentPage} seed=${sessionSeed} ` +
     `words=${page.words.length} sections=${page.sectionCount}`)
   renderMemoView()
 }
 
-/** Glasses selector row: دروس on the current page and screen (M1 behaviour). */
+/** Glasses selector row: the structured دروس flow on the current page, from section 1. */
 function startMemo(seed?: number): void {
-  startActivity('lesson', seed, currentScreen)
+  startActivity('lesson', seed, 0)
 }
 
 function exitMemo(): void {
-  if (memo) currentScreen = memo.section
+  if (memo) currentScreen = sessionSection(memo)
   memo = null
   mode = 'reading'
   console.log(`[Noor][memo] exit → reading page=${currentPage} screen=${currentScreen}`)
@@ -874,34 +949,64 @@ function exitMemo(): void {
   renderReadingView()
 }
 
-/** SCROLL_BOTTOM_EVENT in memo mode. */
-function memoAdvance(): void {
+/** Kind of state the lesson flow is in; crossing a boundary starts a cooldown. */
+function boundaryKey(a: ActiveSession | null): string {
+  return a && a.kind === 'lesson' ? `${a.flow.phase}:${a.flow.k}` : ''
+}
+let boundaryUntil: Record<number, number> = {}
+
+/** Apply one forward/back step to the active session (shared by gestures and test hooks). */
+function stepMemo(dir: 'advance' | 'back'): 'moved' | 'exit' | 'none' {
+  if (!memo) return 'none'
+  if (memo.kind === 'lesson') {
+    if (dir === 'advance') {
+      const next = flowAdvance(memo.flow)
+      if (next === memo.flow) return 'none'
+      memo = { kind: 'lesson', flow: next }
+      return 'moved'
+    }
+    const r = flowBack(memo.flow)
+    if (r === 'exit') return 'exit'
+    memo = { kind: 'lesson', flow: r }
+    return 'moved'
+  }
+  if (dir === 'advance') { memo = { ...memo, s: memoAdvanceState(memo.s) }; return 'moved' }
+  const r = memoBackState(memo.s)
+  if (r === 'exit') return 'exit'
+  memo = { ...memo, s: r }
+  return 'moved'
+}
+
+/** A swipe in memo mode: debounce, boundary cooldown, one step, render. */
+function memoSwipe(dir: 'advance' | 'back'): void {
+  const key = dir === 'advance' ? 2 : 1
   const now = Date.now()
-  if (now - (lastNavTime[2] ?? 0) < NAV_DEBOUNCE_MS) return
-  lastNavTime[2] = now
-  if (!memo) return
-  memo = memoAdvanceState(memo)
-  logMemo('advance')
+  if (now - (lastNavTime[key] ?? 0) < NAV_DEBOUNCE_MS) return
+  if (now < (boundaryUntil[key] ?? 0)) { console.log(`[Noor][memo] ${dir} ignored (boundary cooldown)`); return }
+  lastNavTime[key] = now
+  const before = boundaryKey(memo)
+  const r = stepMemo(dir)
+  if (r === 'exit') { exitMemo(); return }
+  if (r === 'none') return
+  // Crossing into a new phase or section: hold further swipes in the same
+  // direction briefly so a burst of input cannot skip DONE or a whole section.
+  if (boundaryKey(memo) !== before) boundaryUntil[key] = now + BOUNDARY_COOLDOWN_MS
+  logMemo(dir)
   renderMemoView()
 }
+
+/** SCROLL_BOTTOM_EVENT in memo mode. */
+function memoAdvance(): void { memoSwipe('advance') }
 
 /** SCROLL_TOP_EVENT in memo mode. */
-function memoBack(): void {
-  const now = Date.now()
-  if (now - (lastNavTime[1] ?? 0) < NAV_DEBOUNCE_MS) return
-  lastNavTime[1] = now
-  if (!memo) return
-  const r = memoBackState(memo)
-  if (r === 'exit') { exitMemo(); return }
-  memo = r
-  logMemo('back')
-  renderMemoView()
-}
+function memoBack(): void { memoSwipe('back') }
 
-/** Single press in memo mode. */
+/** Single press in memo mode: no action in the structured دروس flow; next section in standalone تسطير. */
 function memoTap(): void {
-  if (!memo || Date.now() - selectorConfirmedAt <= CONFIRM_COOLDOWN_MS) return
-  memo = memoNextSectionState(memo)
+  if (!memo) return
+  if (memo.kind === 'lesson') { console.log('[Noor][memo] tap ignored in structured دروس'); return }
+  if (Date.now() - selectorConfirmedAt <= CONFIRM_COOLDOWN_MS) return
+  memo = { ...memo, s: memoNextSectionState(memo.s) }
   logMemo('next section')
   renderMemoView()
 }
@@ -1191,30 +1296,33 @@ main()
   startTasteer: (seed?: number) => startActivity('tasteer', seed, 0),
   endActivity:  () => { if (mode === 'memo') exitMemo() },
   memo: {
-    start: (seed?: number) => startMemo(seed),
-    advance: () => { if (memo) { memo = memoAdvanceState(memo); renderMemoView() } },
-    back: () => {
-      if (!memo) return
-      const r = memoBackState(memo)
-      if (r === 'exit') exitMemo(); else { memo = r; renderMemoView() }
-    },
-    tap: () => { if (memo) { memo = memoNextSectionState(memo); renderMemoView() } },
-    /** The preview line shown for the current section (for automated checks). */
-    preview: () => memo && nextPreviewLine(n => getPage(n).lines, currentPage, memo.section, TOTAL_PAGES),
+    /** Test hook: structured دروس flow starting at the current screen's section. */
+    start: (seed?: number) => startActivity('lesson', seed, currentScreen),
+    // Test hooks bypass the gesture debounce and boundary cooldown
+    advance: () => { if (stepMemo('advance') === 'moved') renderMemoView() },
+    back: () => { const r = stepMemo('back'); if (r === 'exit') exitMemo(); else if (r === 'moved') renderMemoView() },
+    tap: () => memoTap(),
+    /** The preview line shown for the displayed section (for automated checks). */
+    preview: () => { const pv = memo && sessionPreview(memo); return pv && { page: pv.page, line: pv.line, text: pv.text } },
     /** Token boxes of the displayed section (for automated pixel checks). */
     layout: () => {
       if (!memo) return null
-      const s = memo
+      const a = memo
       const [, ctx] = makeCanvas(IMG_W, IMG_H)
-      return layoutMemoSection(ctx, s).flatMap(l => l.tokens.map(t => ({
+      return layoutMemoSection(ctx, sessionPage(a), sessionSection(a)).flatMap(l => l.tokens.map(t => ({
         role: t.role, word: t.word, x: t.x, w: t.w, y: l.y, fs: l.fs,
-        hidden: t.role === 'word' && isWordHidden(s, t.word),
+        hidden: t.role === 'word' && sessionHidden(a, t.word),
       })))
     },
-    get state() {
-      return memo && { activity: memo.activity, phase: memo.phase, stage: memo.stage, recallIndex: memo.recallIndex,
-        section: memo.section, sectionCount: memo.page.sectionCount, words: memo.page.words.length, seed: memo.seed }
+    /** Preview token boxes with their hidden state (for automated pixel checks). */
+    previewLayout: () => {
+      const a = memo, pv = a && sessionPreview(a)
+      if (!a || !pv) return null
+      const [, ctx] = makeCanvas(IMG_W, IMG_H)
+      return layoutPreview(ctx, pv).map(t => ({ role: t.role, word: t.word, x: t.x, w: t.w, text: t.text,
+        hidden: t.role === 'word' && sessionHidden(a, t.word) }))
     },
+    get state() { return memoState() },
   },
   get page()         { return currentPage },
   get screen()        { return currentScreen },

@@ -278,3 +278,188 @@ export function nextPreviewLine(
   }
   return null
 }
+
+// ─── M1.2 experiment B: section-by-section workflow with interactive preview ──
+//
+// Word identity: page words keep their page-wide index 0..N-1 (reading order).
+// A section's preview is the first Quran text line after it. Within the page,
+// that line's words are the next section's own words (same ids), so they are
+// never counted twice. When the preview comes from the next page (last
+// section), its words get ids N, N+1, … — they take part in that section's
+// exercise only, and never in page progress or the final whole-page recall.
+//
+// Because words are numbered in reading order and headings/basmala carry no
+// words, a section's exercise (its main words followed by its preview words)
+// is always one contiguous id range [start, end).
+
+export interface PreviewModel extends PreviewLine {
+  /** Preview tokens exactly as Reading Mode splits that line; word ids as described above. */
+  tokens: MemoToken[]
+  /** True when the preview line is on the next page (ids ≥ N). */
+  external: boolean
+}
+
+export interface SectionExercise {
+  section: number
+  start: number     // first main word id
+  mainEnd: number   // one past the last main word id
+  end: number       // one past the last preview word id (= mainEnd when there is no preview)
+  preview: PreviewModel | null
+}
+
+/** Build the preview model (tokens with word identities) for a section. */
+export function buildPreview(
+  getLines: (page: number) => SourceLine[] | undefined,
+  page: MemoPage, pageNum: number, section: number, lastPage = 604,
+): PreviewModel | null {
+  const pv = nextPreviewLine(getLines, pageNum, section, lastPage)
+  if (!pv) return null
+  if (pv.page === pageNum) {
+    return { ...pv, tokens: page.lines[pv.line].tokens.map(t => ({ ...t })), external: false }
+  }
+  // Next page: its first text line; its local word ids start at 0 → map to N + local id
+  const next = buildMemoPage(getLines(pv.page) ?? [])
+  const firstLocal = next.words.findIndex(w => w.line === pv.line)
+  const N = page.words.length
+  const tokens = next.lines[pv.line].tokens.map(t =>
+    t.role === 'word' ? { ...t, word: N + (t.word - firstLocal) } : { ...t })
+  return { ...pv, tokens, external: true }
+}
+
+export function buildExercises(
+  getLines: (page: number) => SourceLine[] | undefined,
+  page: MemoPage, pageNum: number, lastPage = 604,
+): SectionExercise[] {
+  const out: SectionExercise[] = []
+  for (let k = 0; k < page.sectionCount; k++) {
+    let start = page.words.findIndex(w => sectionOfLine(w.line) >= k)
+    if (start < 0) start = page.words.length
+    let mainEnd = page.words.findIndex(w => sectionOfLine(w.line) > k)
+    if (mainEnd < 0) mainEnd = page.words.length
+    const preview = buildPreview(getLines, page, pageNum, k, lastPage)
+    const ids = preview ? preview.tokens.filter(t => t.role === 'word').map(t => t.word) : []
+    const end = ids.length ? Math.max(...ids) + 1 : mainEnd
+    out.push({ section: k, start, mainEnd, end, preview })
+  }
+  return out
+}
+
+/** Per-section seed derived from the session seed (deterministic). */
+export function sectionSeed(seed: number, section: number): number {
+  return (Math.imul(seed ^ 0x9E3779B9, 0x85EBCA6B) + Math.imul(section + 1, 0xC2B2AE35)) >>> 0
+}
+
+export type FlowPhase = 'memo' | 'recall' | 'done' | 'final' | 'complete'
+
+export interface Flow {
+  page: MemoPage
+  seed: number
+  exercises: SectionExercise[]
+  /** ranks[k][i] = position of exercise word (start + i) in section k's hiding order */
+  ranks: Int32Array[]
+  k: number            // active section (memo / recall / done)
+  phase: FlowPhase
+  stage: number        // 0..7 in 'memo'
+  index: number        // recall: -1..count-1 within the exercise; final: -1..N-1 page-wide
+  section: number      // displayed section
+}
+
+export function exerciseCount(e: SectionExercise): number {
+  return e.end - e.start
+}
+
+export function startFlow(page: MemoPage, exercises: SectionExercise[], seed: number, section = 0): Flow {
+  const k = Math.min(Math.max(0, section), exercises.length - 1)
+  return {
+    page, seed, exercises,
+    ranks: exercises.map(e => rankOf(hidingOrder(exerciseCount(e), sectionSeed(seed, e.section)))),
+    k, phase: 'memo', stage: 0, index: -1, section: k,
+  }
+}
+
+export type FlowResult = Flow | 'exit'
+
+/** SCROLL_BOTTOM_EVENT: one step forward. Never skips a state. */
+export function flowAdvance(f: Flow): Flow {
+  const e = f.exercises[f.k], N = f.page.words.length
+  switch (f.phase) {
+    case 'memo':
+      return f.stage < MAX_STAGE ? { ...f, stage: f.stage + 1 } : { ...f, phase: 'recall', index: -1 }
+    case 'recall': {
+      // Revealing the exercise's last word (normally the last preview word) enters DONE
+      const next = f.index + 1
+      if (next >= exerciseCount(e) - 1) return { ...f, phase: 'done', index: exerciseCount(e) - 1 }
+      return { ...f, index: next }
+    }
+    case 'done':
+      if (f.k < f.exercises.length - 1) return { ...f, k: f.k + 1, phase: 'memo', stage: 0, index: -1, section: f.k + 1 }
+      return { ...f, phase: 'final', index: -1, section: 0 }
+    case 'final': {
+      // Revealing the page's last word enters COMPLETE
+      const next = f.index + 1
+      if (next >= N - 1) return { ...f, phase: 'complete', index: N - 1, section: sectionOfWord(f.page, N - 1) }
+      return { ...f, index: next, section: sectionOfWord(f.page, next) }
+    }
+    case 'complete':
+      return f
+  }
+}
+
+/** SCROLL_TOP_EVENT: one step back; the exact inverse of flowAdvance. */
+export function flowBack(f: Flow): FlowResult {
+  const e = f.exercises[f.k], N = f.page.words.length
+  switch (f.phase) {
+    case 'memo':
+      if (f.stage > 0) return { ...f, stage: f.stage - 1 }
+      if (f.k > 0) return { ...f, k: f.k - 1, phase: 'done', stage: MAX_STAGE, index: exerciseCount(f.exercises[f.k - 1]) - 1, section: f.k - 1 }
+      return 'exit'
+    case 'recall':
+      if (f.index >= 0) return { ...f, index: f.index - 1 }
+      return { ...f, phase: 'memo', stage: MAX_STAGE }
+    case 'done':
+      // Re-hide the last revealed word
+      return { ...f, phase: 'recall', index: exerciseCount(e) - 2 }
+    case 'final':
+      if (f.index >= 0) {
+        const prev = f.index - 1
+        return { ...f, index: prev, section: prev >= 0 ? sectionOfWord(f.page, prev) : 0 }
+      }
+      {
+        const last = f.exercises.length - 1
+        return { ...f, phase: 'done', k: last, stage: MAX_STAGE, index: exerciseCount(f.exercises[last]) - 1, section: last }
+      }
+    case 'complete': {
+      const prev = N - 2
+      return { ...f, phase: 'final', index: prev, section: prev >= 0 ? sectionOfWord(f.page, prev) : 0 }
+    }
+  }
+}
+
+/**
+ * Is word `id` (page id, or ≥ N for an external preview word) hidden in the
+ * current display? Ids outside the active section's exercise follow page-wide
+ * state only during the final recall; otherwise they are shown.
+ */
+export function flowHidden(f: Flow, id: number): boolean {
+  const N = f.page.words.length
+  if (f.phase === 'final') return id < N && id > f.index
+  if (f.phase === 'complete') return false
+  const e = f.exercises[f.k]
+  if (id < e.start || id >= e.end) return false
+  const pos = id - e.start
+  switch (f.phase) {
+    case 'memo': return f.ranks[f.k][pos] < hiddenCountAtStage(f.stage, exerciseCount(e))
+    case 'recall': return pos > f.index
+    default: return false   // done
+  }
+}
+
+/** Revealed / total for the footer and phone: section exercise or whole page. */
+export function flowProgress(f: Flow): { revealed: number; total: number } {
+  if (f.phase === 'final') return { revealed: f.index + 1, total: f.page.words.length }
+  if (f.phase === 'complete') return { revealed: f.page.words.length, total: f.page.words.length }
+  const n = exerciseCount(f.exercises[f.k])
+  if (f.phase === 'recall') return { revealed: f.index + 1, total: n }
+  if (f.phase === 'done') return { revealed: n, total: n }
+  return { revealed: 0, total: n }
+}
